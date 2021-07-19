@@ -44,6 +44,7 @@
     "fastify-websocket": "^3.0.0",
     "pino": "^6.11.0",
     "pino-pretty": "^4.3.0",
+    "pino-sentry": "^0.7.0",
     "prom-client": "^13.0.0",
     "redis": "^3.1.2",
     "relay-provider": "^2.0.0-beta.0",

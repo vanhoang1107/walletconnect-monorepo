@@ -4,6 +4,7 @@ import helmet from "fastify-helmet";
 import ws from "fastify-websocket";
 import pino, { Logger } from "pino";
 import { getDefaultLoggerOptions, generateChildLogger } from "@pedrouid/pino-utils";
+import * as pinoSentry from "pino-sentry";
 import client from "prom-client";
 
 import config from "./config";
@@ -41,10 +42,19 @@ export class HttpService {
   public metrics;
 
   constructor(opts: HttpServiceOptions) {
-    const logger =
-      typeof opts?.logger !== "undefined" && typeof opts?.logger !== "string"
-        ? opts.logger
-        : pino(getDefaultLoggerOptions({ level: opts?.logger }));
+    let logger: Logger
+    if (typeof opts?.logger !== "undefined" && typeof opts?.logger !== "string") {
+      logger = opts.logger
+    } else if (process.env.SENTRY_DSN) {
+      const stream = pinoSentry.createWriteStream({
+        dsn: process.env.SENTRY_DSN,
+        level: "warning",
+        maxBreadcrumbs: 30,
+      })
+      logger = pino(getDefaultLoggerOptions({ level: opts?.logger }), stream)
+    } else {
+      logger = pino(getDefaultLoggerOptions({ level: opts?.logger }))
+    }
     this.app = fastify({ logger });
     this.logger = generateChildLogger(logger, this.context);
     this.metrics = this.setMetrics();
