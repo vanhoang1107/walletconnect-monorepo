@@ -96,7 +96,11 @@ export class HttpService {
 
   private registerApi() {
     this.app.register(helmet);
-    this.app.register(ws);
+    this.app.register(ws, {
+      options: {
+        perMessageDeflate: true,
+      }
+    });
 
     this.app.get("/", { websocket: true }, connection => {
       connection.on("error", (e: Error) => {
