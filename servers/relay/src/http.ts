@@ -1,10 +1,14 @@
 import { EventEmitter } from "events";
+import * as http from "http"
+import * as WebSocket from "ws";
 import fastify, { FastifyInstance } from "fastify";
 import helmet from "fastify-helmet";
 import ws from "fastify-websocket";
 import pino, { Logger } from "pino";
 import { getDefaultLoggerOptions, generateChildLogger } from "@pedrouid/pino-utils";
 import * as pinoSentry from "pino-sentry";
+import * as Sentry from "@sentry/node"
+import { Severity as SentrySeverity } from "@sentry/types";
 import client from "prom-client";
 
 import config from "./config";
@@ -47,9 +51,7 @@ export class HttpService {
       logger = opts.logger
     } else if (process.env.SENTRY_DSN) {
       const stream = pinoSentry.createWriteStream({
-        dsn: process.env.SENTRY_DSN,
         level: "warning",
-        maxBreadcrumbs: 30,
       })
       logger = pino(getDefaultLoggerOptions({ level: opts?.logger }), stream)
     } else {
@@ -97,12 +99,11 @@ export class HttpService {
   private registerApi() {
     this.app.register(helmet);
     this.app.register(ws, {
-      options: {
-        perMessageDeflate: true,
-      }
-    });
+      options: genWsOptions()
+    })
 
-    this.app.get("/", { websocket: true }, connection => {
+    this.app.get("/", { websocket: true }, (connection, req) => {
+      req.headers
       connection.on("error", (e: Error) => {
         if (!e.message.includes("Invalid WebSocket frame")) {
           this.logger.fatal(e);
@@ -171,5 +172,39 @@ export class HttpService {
 
   private setBeatInterval() {
     setInterval(() => this.events.emit(SERVER_EVENTS.beat), SERVER_BEAT_INTERVAL);
+  }
+}
+
+function genWsOptions(): WebSocket.ServerOptions {
+  const originSet: { [key: string]: boolean } = {};
+  (process.env.INTERNAL_ORIGINS || '')
+    .split(';')
+    .map(o => originSet[o] = true)
+  const ipHeaders = [
+    'cf-connecting-ip',
+    'x-forwarded-for',
+  ]
+  const getRequestIP = (req: http.IncomingMessage) => {
+    return ipHeaders.map(h => req.headers[h]).find(h => !!h) || req.socket.remoteAddress
+  }
+  return {
+    maxPayload: 500 * 1024,
+    perMessageDeflate: true,
+    verifyClient: ({ origin, secure, req }): boolean => {
+      if (originSet[origin]) {
+        return true
+      }
+      Sentry.captureMessage("an external origin init websocket", {
+        user: {
+          ip: getRequestIP(req),
+        },
+        level: SentrySeverity.Warning,
+        extra: {
+          "origin": origin,
+          "secure": secure,
+        },
+      })
+      return true
+    },
   }
 }

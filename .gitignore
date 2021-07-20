@@ -32,3 +32,4 @@ setup
 result
 ops/grafana/grafana.ini
 .history
+.vscode
