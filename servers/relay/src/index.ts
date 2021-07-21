@@ -14,16 +14,14 @@ function initSentry() {
 }
 initSentry()
 
-const { app } = new HttpService({
+const httpService = new HttpService({
   logger: config.debug ? "debug" : "warn",
-});
+})
+const app = httpService.app
 
 // Due to Pino Sentry has init Sentry the 2nd time.
 // We need to init the 3rd time to override the empty config.
-app.addHook('onReady', done => {
-  initSentry()
-  done()
-})
+initSentry()
 
 async function onCloseSignal(signal) {
   console.info(`Signal ${signal} received.`)
@@ -47,7 +45,9 @@ async function onCloseSignal(signal) {
 process.on('SIGTERM', onCloseSignal)
 process.on('SIGINT', onCloseSignal)
 
-app.listen(+config.port, config.host, (err, address) => {
-  if (!config.debug) app.log.info(`Server listening on ${address}`);
-  if (err) throw err;
+httpService.initialize().then(() => {
+  app.listen(+config.port, config.host, (err, address) => {
+    if (!config.debug) app.log.info(`Server listening on ${address}`);
+    if (err) throw err;
+  })
 })

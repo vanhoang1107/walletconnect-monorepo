@@ -3,6 +3,7 @@ import * as http from "http"
 import * as WebSocket from "ws";
 import fastify, { FastifyInstance } from "fastify";
 import helmet from "fastify-helmet";
+import middiePlugin from "middie"
 import ws from "fastify-websocket";
 import pino, { Logger } from "pino";
 import { getDefaultLoggerOptions, generateChildLogger } from "@pedrouid/pino-utils";
@@ -12,7 +13,7 @@ import { Severity as SentrySeverity } from "@sentry/types";
 import client from "prom-client";
 
 import config from "./config";
-import { assertType } from "./utils";
+import { assertType, getRequestIP } from "./utils";
 import { RedisService } from "./redis";
 import { WebSocketService } from "./ws";
 import { NotificationService } from "./notification";
@@ -68,8 +69,6 @@ export class HttpService {
     this.message = new MessageService(this, this.logger);
     this.subscription = new SubscriptionService(this, this.logger);
     this.notification = new NotificationService(this, this.logger);
-
-    this.initialize();
   }
 
   public on(event: string, listener: any): void {
@@ -88,17 +87,46 @@ export class HttpService {
     this.events.removeListener(event, listener);
   }
 
-  // ---------- Private ----------------------------------------------- //
-
-  private initialize(): void {
+  public async initialize(): Promise<void> {
     this.logger.trace(`Initialized`);
-    this.registerApi();
+    await this.registerMeta()
+    await this.registerApi();
     this.setBeatInterval();
   }
 
-  private registerApi() {
-    this.app.register(helmet);
-    this.app.register(ws, {
+  // ---------- Private ----------------------------------------------- //
+
+  private async registerMeta() {
+    await this.app.register(helmet)
+    await this.app.register(middiePlugin)
+
+    const sentryErrHandler = Sentry.Handlers.errorHandler()
+    this.app
+      .addHook('onError', (req, rep, err, done) => {
+        sentryErrHandler(
+          {
+            name: err.name,
+            message: err.message,
+            statusCode: err.statusCode,
+          },
+          req.raw,
+          rep.raw,
+          err => done
+        )
+      })
+      .use((req: http.IncomingMessage, res: http.ServerResponse, next: (error?: any) => void) => {
+        Sentry.configureScope(scope => {
+          scope.setUser({ ip_address: getRequestIP(req) })
+        })
+        next()
+      })
+      .use(Sentry.Handlers.requestHandler({
+        flushTimeout: 2000
+      }))
+  }
+
+  private async registerApi() {
+    await this.app.register(ws, {
       options: genWsOptions()
     })
 
@@ -178,32 +206,17 @@ export class HttpService {
 function genWsOptions(): WebSocket.ServerOptions {
   const originSet: { [key: string]: boolean } = {};
   (process.env.INTERNAL_ORIGINS || '')
-    .split(';')
+    .split(',')
     .map(o => originSet[o] = true)
-  const ipHeaders = [
-    'cf-connecting-ip',
-    'x-forwarded-for',
-  ]
-  const getRequestIP = (req: http.IncomingMessage) => {
-    return ipHeaders.map(h => req.headers[h]).find(h => !!h) || req.socket.remoteAddress
-  }
   return {
     maxPayload: 500 * 1024,
     perMessageDeflate: true,
-    verifyClient: ({ origin, secure, req }): boolean => {
-      if (originSet[origin]) {
-        return true
+    verifyClient: ({ origin }): boolean => {
+      if (!originSet[origin]) {
+        Sentry.captureMessage("an external origin init websocket", {
+          level: SentrySeverity.Warning,
+        })
       }
-      Sentry.captureMessage("an external origin init websocket", {
-        user: {
-          ip: getRequestIP(req),
-        },
-        level: SentrySeverity.Warning,
-        extra: {
-          "origin": origin,
-          "secure": secure,
-        },
-      })
       return true
     },
   }

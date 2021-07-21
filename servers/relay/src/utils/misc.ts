@@ -1,3 +1,4 @@
+import * as http from "http"
 import * as crypto from "crypto";
 import * as encUtils from "enc-utils";
 
@@ -20,4 +21,20 @@ export function sha256(data: string): string {
 
 export function isFloat(num: number): boolean {
   return num % 1 != 0;
+}
+
+const IP_HEADERS = [
+  'cf-connecting-ip',
+  'x-forwarded-for',
+]
+export function getRequestIP(req: http.IncomingMessage): string | undefined {
+  return IP_HEADERS
+    .map(h => {
+      const value = req.headers[h]
+      if (!value) {
+        return undefined
+      }
+      return Array.isArray(value) ? value[0] : value
+    })
+    .find(h => !!h) || req.socket.remoteAddress
 }

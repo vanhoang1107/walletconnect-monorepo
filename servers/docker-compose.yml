@@ -17,7 +17,7 @@ services:
       REDIS_MAXTTL: 86400
       RELAY_MODE: any
       SENTRY_DSN: 
-      INTERNAL_ORIGINS: https://abc.com;https://xyz.com
+      INTERNAL_ORIGINS: https://abc.com,https://xyz.com
     volumes:
       - /opt/projects/walletconnect-monorepo/servers/relay/:/opt/app/:Z
     healthcheck:
