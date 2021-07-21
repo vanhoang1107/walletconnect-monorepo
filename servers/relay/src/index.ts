@@ -10,6 +10,7 @@ function initSentry() {
     debug: config.debug,
     logLevel: SentryLogLevel.Error,
     maxBreadcrumbs: 30,
+    tracesSampleRate: 0.25,
   })
 }
 initSentry()

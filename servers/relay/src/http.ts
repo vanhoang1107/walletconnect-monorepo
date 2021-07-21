@@ -123,6 +123,7 @@ export class HttpService {
       .use(Sentry.Handlers.requestHandler({
         flushTimeout: 2000
       }))
+      .use(Sentry.Handlers.tracingHandler())
   }
 
   private async registerApi() {
