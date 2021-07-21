@@ -212,7 +212,7 @@ function genWsOptions(): WebSocket.ServerOptions {
     maxPayload: 500 * 1024,
     perMessageDeflate: true,
     verifyClient: ({ origin }): boolean => {
-      if (!originSet[origin]) {
+      if (origin && !originSet[origin]) {
         Sentry.captureMessage("an external origin init websocket", {
           level: SentrySeverity.Warning,
         })
