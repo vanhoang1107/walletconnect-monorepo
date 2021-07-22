@@ -48,6 +48,7 @@ process.on('SIGINT', onCloseSignal)
 
 httpService.initialize().then(() => {
   app.listen(+config.port, config.host, (err, address) => {
+    console.log(`App is running on ${address}`)
     if (!config.debug) app.log.info(`Server listening on ${address}`);
     if (err) throw err;
   })

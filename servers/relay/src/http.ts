@@ -132,7 +132,6 @@ export class HttpService {
     })
 
     this.app.get("/", { websocket: true }, (connection, req) => {
-      req.headers
       connection.on("error", (e: Error) => {
         if (!e.message.includes("Invalid WebSocket frame")) {
           this.logger.fatal(e);
@@ -208,15 +207,21 @@ function genWsOptions(): WebSocket.ServerOptions {
   const originSet: { [key: string]: boolean } = {};
   (process.env.INTERNAL_ORIGINS || '')
     .split(',')
-    .map(o => originSet[o] = true)
+    .map(o => {
+      originSet[o] = true
+      if (!o.endsWith('/')) {
+        originSet[o + '/'] = true
+      }
+    })
   return {
     maxPayload: 500 * 1024,
     perMessageDeflate: true,
     verifyClient: ({ origin }): boolean => {
       if (origin && !originSet[origin]) {
-        Sentry.captureMessage("an external origin init websocket", {
-          level: SentrySeverity.Warning,
-        })
+        Sentry.captureMessage(
+          `an external origin init websocket | origin=${origin}`,
+          { level: SentrySeverity.Warning },
+        )
       }
       return true
     },
