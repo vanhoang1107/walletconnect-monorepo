@@ -1,6 +1,7 @@
 import { Logger } from "pino";
 import { generateChildLogger } from "@pedrouid/pino-utils";
 import { safeJsonStringify } from "safe-json-utils";
+import { Span, SpanStatus } from "@sentry/tracing"
 
 import { LegacySocketMessage, Subscription } from "./types";
 import { HttpService } from "./http";
@@ -15,17 +16,20 @@ export class LegacyService {
     this.initialize();
   }
 
-  public async onRequest(socketId: string, message: LegacySocketMessage) {
+  public async onRequest(socketId: string, message: LegacySocketMessage, span: Span | undefined = undefined) {
     this.logger.info(`Incoming Legacy Socket Message`);
     this.logger.debug({ type: "payload", direction: "incoming", payload: message });
+    if (span) span.status = SpanStatus.Ok
 
     try {
       switch (message.type) {
         case LEGACY_MESSAGE_TYPE.pub:
           await this.onPublishRequest(socketId, message);
+          if (span) span.data = { ...span.data, method: "pub" }
           break;
         case LEGACY_MESSAGE_TYPE.sub:
           await this.onSubscribeRequest(socketId, message);
+          if (span) span.data = { ...span.data, method: "sub" }
           break;
         default:
           break;
@@ -33,6 +37,10 @@ export class LegacyService {
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error(e);
+      if (span) {
+        span.status = SpanStatus.InternalError
+        span.data = { ...span.data, error: e }
+      }
     }
   }
 

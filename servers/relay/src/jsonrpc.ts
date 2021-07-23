@@ -17,6 +17,7 @@ import {
   parseUnsubscribeRequest,
 } from "relay-provider";
 import { generateChildLogger } from "@pedrouid/pino-utils";
+import { Span, SpanStatus } from "@sentry/tracing"
 
 import config from "./config";
 import { HttpService } from "./http";
@@ -38,7 +39,7 @@ export class JsonRpcService {
     this.initialize();
   }
 
-  public async onPayload(socketId: string, payload: JsonRpcPayload): Promise<void> {
+  public async onPayload(socketId: string, payload: JsonRpcPayload, span: Span | undefined = undefined): Promise<void> {
     if (isJsonRpcRequest(payload)) {
       this.onRequest(socketId, payload);
     } else {
@@ -46,10 +47,11 @@ export class JsonRpcService {
     }
   }
 
-  public async onRequest(socketId: string, request: JsonRpcRequest): Promise<void> {
+  public async onRequest(socketId: string, request: JsonRpcRequest, span: Span | undefined = undefined): Promise<void> {
     try {
       this.logger.info(`Incoming JSON-RPC Payload`);
       this.logger.debug({ type: "payload", direction: "incoming", payload: request, socketId });
+      if (span) span.status = SpanStatus.Ok
 
       switch (request.method) {
         case RELAY_JSONRPC.waku.publish:
@@ -73,6 +75,7 @@ export class JsonRpcService {
           break;
 
         default:
+          if (span) span.status = SpanStatus.Unimplemented
           this.server.ws.send(socketId, formatJsonRpcError(request.id, getError(METHOD_NOT_FOUND)));
           return;
       }
@@ -80,13 +83,26 @@ export class JsonRpcService {
       // eslint-disable-next-line no-console
       console.error(e);
       this.server.ws.send(socketId, formatJsonRpcError(request.id, e.message));
+      if (span) {
+        span.status = SpanStatus.InternalError
+        span.data = { error: e }
+      }
     }
   }
 
-  public async onResponse(socketId: string, response: JsonRpcResponse): Promise<void> {
+  public async onResponse(socketId: string, response: JsonRpcResponse, span: Span | undefined = undefined): Promise<void> {
     this.logger.info(`Incoming JSON-RPC Payload`);
     this.logger.debug({ type: "payload", direction: "incoming", payload: response, socketId });
-    await this.server.message.ackMessage(response.id);
+    if (span) span.status = SpanStatus.Ok
+
+    try {
+      await this.server.message.ackMessage(response.id);
+    } catch (e) {
+      if (span) {
+        span.status = SpanStatus.InternalError
+        span.data = { error: e }
+      }
+    }
   }
 
   // ---------- Private ----------------------------------------------- //

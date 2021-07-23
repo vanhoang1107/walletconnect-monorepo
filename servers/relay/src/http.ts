@@ -120,9 +120,7 @@ export class HttpService {
         })
         next()
       })
-      .use(Sentry.Handlers.requestHandler({
-        flushTimeout: 2000
-      }))
+      .use(Sentry.Handlers.requestHandler({ flushTimeout: 2000 }))
       .use(Sentry.Handlers.tracingHandler())
   }
 

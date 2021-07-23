@@ -34,7 +34,7 @@ export function getRequestIP(req: http.IncomingMessage): string | undefined {
       if (!value) {
         return undefined
       }
-      return Array.isArray(value) ? value[0] : value
+      return (Array.isArray(value) ? value[0] : value).split(',')[0]
     })
     .find(h => !!h) || req.socket.remoteAddress
 }

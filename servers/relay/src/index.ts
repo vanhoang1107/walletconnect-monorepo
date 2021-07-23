@@ -1,34 +1,42 @@
+import { CaptureConsole } from "@sentry/integrations";
 import * as Sentry from "@sentry/node";
 import { LogLevel as SentryLogLevel } from "@sentry/types";
 import config from "./config";
 import { HttpService } from "./http";
 
 
-function initSentry() {
-  Sentry.init({
-    dsn: process.env.SENTRY_DSN,
-    debug: config.debug,
-    logLevel: SentryLogLevel.Error,
-    maxBreadcrumbs: 30,
-    tracesSampleRate: 0.25,
-  })
-}
-initSentry()
-
 const httpService = new HttpService({
   logger: config.debug ? "debug" : "warn",
 })
-const app = httpService.app
+const { app, ws } = httpService
 
-// Due to Pino Sentry has init Sentry the 2nd time.
-// We need to init the 3rd time to override the empty config.
-initSentry()
+Sentry.init({
+  dsn: process.env.SENTRY_DSN,
+  debug: config.debug,
+  logLevel: SentryLogLevel.Error,
+  integrations: [
+    new CaptureConsole({ levels: ["warn"] }),
+  ],
+  maxBreadcrumbs: 30,
+  tracesSampleRate: 0.35,
+})
 
+
+let isStopping = false
 async function onCloseSignal(signal) {
+  if (isStopping) {
+    return
+  }
+  isStopping = true
+
   console.info(`Signal ${signal} received.`)
   console.log('App is being closed...')
 
-  const closeErr = await app.close()
+  setTimeout(() => {
+    console.log('App has been force closed!')
+    process.exit(1)
+  }, 10000).unref()
+  const [closeErr, _] = await Promise.all([app.close(), ws.close()])
   if (closeErr) {
     console.log('Close app failed with error:', closeErr)
   }
@@ -46,10 +54,10 @@ async function onCloseSignal(signal) {
 process.on('SIGTERM', onCloseSignal)
 process.on('SIGINT', onCloseSignal)
 
+
 httpService.initialize().then(() => {
   app.listen(+config.port, config.host, (err, address) => {
-    console.log(`App is running on ${address}`)
-    if (!config.debug) app.log.info(`Server listening on ${address}`);
     if (err) throw err;
+    console.info(`App is running on ${address}`)
   })
 })

@@ -3,6 +3,8 @@ import client from "prom-client";
 import { safeJsonParse, safeJsonStringify } from "safe-json-utils";
 import { isJsonRpcPayload, JsonRpcPayload } from "@json-rpc-tools/utils";
 import { generateChildLogger } from "@pedrouid/pino-utils";
+import * as Sentry from "@sentry/node"
+import { SpanStatus } from "@sentry/tracing"
 
 import config from "./config";
 import { JsonRpcService } from "./jsonrpc";
@@ -53,6 +55,12 @@ export class WebSocketService {
     this.initialize();
   }
 
+  public close(): void {
+    this.sockets.forEach((s, id) => {
+      s.close(1012) // Service Restart
+    })
+  }
+
   public send(socketId: string, msg: string | JsonRpcPayload | LegacySocketMessage): boolean {
     const socket = this.getSocket(socketId);
     if (typeof socket === "undefined") return false;
@@ -89,35 +97,56 @@ export class WebSocketService {
     this.logger.debug({ type: "event", event: "connection", socketId });
     this.sockets.set(socketId, socket);
     this.server.events.emit(WEBSOCKET_EVENTS.open, socketId);
+
+    let sentryTxn = Sentry.startTransaction({
+      name: `WS bridge`,
+      op: 'open',
+      sampled: true,
+      status: SpanStatus.Ok,
+    })
     socket.on("message", async data => {
       this.metrics.totalMessages.inc();
+
+      const span = sentryTxn.startChild({ op: "handle message" })
       const message = data.toString();
       this.logger.debug(`Incoming Socket Message`);
       this.logger.trace({ type: "message", direction: "incoming", message });
 
-      if (!message || !message.trim()) {
-        this.send(socketId, "Missing or invalid socket data");
-        return;
-      }
-      const payload = safeJsonParse(message);
-      if (typeof payload === "string") {
-        this.send(socketId, "Socket message is invalid");
-        return;
-      } else if (isLegacySocketMessage(payload)) {
-        if (isLegacyDisabled(config.mode)) {
-          this.send(socketId, "Legacy messages are disabled");
+      try {
+        if (!message || !message.trim()) {
+          this.send(socketId, "Missing or invalid socket data");
+          span.status = SpanStatus.InvalidArgument
           return;
         }
-        this.legacy.onRequest(socketId, payload);
-      } else if (isJsonRpcPayload(payload)) {
-        if (isJsonRpcDisabled(config.mode)) {
-          this.send(socketId, "JSON-RPC messages are disabled");
+        const payload = safeJsonParse(message);
+        if (typeof payload === "string") {
+          this.send(socketId, "Socket message is invalid");
+          span.status = SpanStatus.InvalidArgument
           return;
         }
-        this.jsonrpc.onPayload(socketId, payload);
-      } else {
+        if (isLegacySocketMessage(payload)) {
+          if (isLegacyDisabled(config.mode)) {
+            this.send(socketId, "Legacy messages are disabled");
+            span.status = SpanStatus.Unavailable
+            return;
+          }
+          this.legacy.onRequest(socketId, payload, span)
+          return
+        }
+        if (isJsonRpcPayload(payload)) {
+          if (isJsonRpcDisabled(config.mode)) {
+            this.send(socketId, "JSON-RPC messages are disabled");
+            span.status = SpanStatus.Unavailable
+            return;
+          }
+          this.jsonrpc.onPayload(socketId, payload, span);
+          return
+        }
         this.send(socketId, "Socket message unsupported");
-        return;
+        span.status = SpanStatus.Unimplemented
+        return
+      } finally {
+        span.finish()
       }
     });
 
@@ -134,6 +163,11 @@ export class WebSocketService {
     });
 
     socket.on("close", () => {
+      const nowUnix = new Date().getTime() / 1000
+      if (nowUnix - sentryTxn.startTimestamp < 5) {
+        sentryTxn.sampled = false
+      }
+      sentryTxn.finish()
       this.metrics.closeConnection.inc();
       this.sockets.delete(socketId);
       this.server.events.emit(WEBSOCKET_EVENTS.close, socketId);

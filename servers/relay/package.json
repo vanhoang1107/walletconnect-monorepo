@@ -36,6 +36,7 @@
     "@json-rpc-tools/utils": "^2.0.0-beta.12",
     "@json-rpc-tools/ws-connection": "^2.0.0-beta.12",
     "@pedrouid/pino-utils": "^1.0.1",
+    "@sentry/integrations": "^6.10.0",
     "@types/pino": "^6.3.5",
     "axios": "^0.21.1",
     "enc-utils": "^3.0.0",

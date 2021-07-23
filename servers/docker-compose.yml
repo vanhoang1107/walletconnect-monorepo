@@ -16,8 +16,9 @@ services:
       REDIS_PREFIX: wc-bridge
       REDIS_MAXTTL: 86400
       RELAY_MODE: any
-      SENTRY_DSN: 
       INTERNAL_ORIGINS: https://abc.com,https://xyz.com
+      SENTRY_DSN: 
+      SENTRY_ENVIRONMENT: dev
     volumes:
       - /opt/projects/walletconnect-monorepo/servers/relay/:/opt/app/:Z
     healthcheck:
