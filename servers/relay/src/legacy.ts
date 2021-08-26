@@ -1,6 +1,6 @@
 import { Logger } from "pino";
-import { generateChildLogger } from "@pedrouid/pino-utils";
-import { safeJsonStringify } from "safe-json-utils";
+import { generateChildLogger } from "@walletconnect/logger";
+import { safeJsonStringify } from "@walletconnect/safe-json";
 import { Span, SpanStatus } from "@sentry/tracing"
 
 import { LegacySocketMessage, Subscription } from "./types";

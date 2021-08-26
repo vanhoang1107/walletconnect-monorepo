@@ -17,7 +17,7 @@ import {
   TEST_SESSION_TTL,
 } from "./shared";
 import { CLIENT_EVENTS } from "../src";
-import { ErrorResponse, formatJsonRpcResult } from "@json-rpc-tools/utils";
+import { ErrorResponse, formatJsonRpcResult } from "@walletconnect/jsonrpc-utils";
 
 describe("Session", function() {
   this.timeout(TEST_TIMEOUT_DURATION);
@@ -151,7 +151,7 @@ describe("Session", function() {
     await clients.b.session.ping(topic, TEST_TIMEOUT_DURATION);
   });
   it("B updates state accounts and A receives event", async () => {
-    const state = { accounts: ["0x8fd00f170fdf3772c5ebdcd90bf257316c69ba45@eip155:1"] };
+    const state = { accounts: ["eip155:1:0x8fd00f170fdf3772c5ebdcd90bf257316c69ba45"] };
     const { setup, clients } = await setupClientsForTesting();
     const topic = await testApproveSession(setup, clients);
     await Promise.all([
@@ -169,7 +169,7 @@ describe("Session", function() {
     ]);
   });
   it("A updates state accounts and error is thrown", async () => {
-    const state = { accounts: ["0x8fd00f170fdf3772c5ebdcd90bf257316c69ba45@eip155:1"] };
+    const state = { accounts: ["eip155:1:0x8fd00f170fdf3772c5ebdcd90bf257316c69ba45"] };
     const { setup, clients } = await setupClientsForTesting();
     const topic = await testApproveSession(setup, clients);
     const promise = clients.a.update({ topic, state });

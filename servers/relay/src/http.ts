@@ -6,7 +6,7 @@ import helmet from "fastify-helmet";
 import middiePlugin from "middie"
 import ws from "fastify-websocket";
 import pino, { Logger } from "pino";
-import { getDefaultLoggerOptions, generateChildLogger } from "@pedrouid/pino-utils";
+import { getDefaultLoggerOptions, generateChildLogger } from "@walletconnect/logger";
 import * as pinoSentry from "pino-sentry";
 import * as Sentry from "@sentry/node"
 import { Severity as SentrySeverity } from "@sentry/types";
