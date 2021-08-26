@@ -31,6 +31,9 @@
     "lint": "eslint -c '../../.eslintrc' --fix './src/**/*.ts'"
   },
   "dependencies": {
+    "@sentry/integrations": "^6.11.0",
+    "@sentry/node": "^6.11.0",
+    "@sentry/tracing": "^6.11.0",
     "@types/pino": "^6.3.5",
     "@walletconnect/encoding": "^1.0.0",
     "@walletconnect/jsonrpc-http-connection": "^1.0.0",
