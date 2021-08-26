@@ -1,0 +1,57 @@
+version: '3.8'
+services:
+  relay:
+    image: registry.docker.local:5000/walletconnect-relay:${TAG}
+    working_dir: /opt/app/
+    command: node ./dist/index.js
+    environment:
+      TZ: Asia/Ho_Chi_Minh
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 8080
+      REDIS_URL: redis://redis:6379/3
+      REDIS_PREFIX: wc-bridge
+      REDIS_MAXTTL: 86400
+      RELAY_MODE: any
+      INTERNAL_ORIGINS: https://walletconnect-bridge.my-app.local,https://my-app.local
+      SENTRY_DSN: https://xxx@sentry.my-app.local/123
+      SENTRY_ENVIRONMENT: live
+    stop_grace_period: 15s
+    deploy:
+      replicas: 2
+      update_config:
+        parallelism: 1
+        delay: 3s
+        order: stop-first
+      placement:
+        max_replicas_per_node: 1
+        constraints:
+          - node.role == worker
+      restart_policy:
+        condition: any
+      labels:
+        traefik.enable: "true"
+        traefik.docker.network: web
+        traefik.http.routers.walletconnect-bridge.rule: Host(`walletconnect-bridge.my-app.local`)
+        traefik.http.routers.walletconnect-bridge.entrypoints: web
+        traefik.http.services.walletconnect-bridge.loadbalancer.server.port: 8080
+        traefik.http.services.walletconnect-bridge.loadbalancer.healthcheck.path: /health
+        traefik.http.services.walletconnect-bridge.loadbalancer.healthcheck.interval: 5s
+        traefik.http.services.walletconnect-bridge.loadbalancer.healthcheck.timeout: 1s
+        traefik.http.services.walletconnect-bridge.loadbalancer.sticky.cookie: "true"
+        traefik.http.services.walletconnect-bridge.loadbalancer.sticky.cookie.httponly: "true"
+        traefik.http.services.walletconnect-bridge.loadbalancer.sticky.cookie.secure: "true"
+        traefik.http.services.walletconnect-bridge.loadbalancer.sticky.cookie.name: "_my-app_sticky"
+        traefik.http.services.walletconnect-bridge.loadbalancer.sticky.cookie.samesite: "strict"
+    networks:
+      - web
+    healthcheck:
+      test: ["CMD", "curl",  "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 2s
+      retries: 3
+      start_period: 5s
+
+networks:
+  web:
+    external: true
