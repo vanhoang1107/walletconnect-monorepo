@@ -13,7 +13,7 @@ services:
       REDIS_PREFIX: wc-bridge
       REDIS_MAXTTL: 86400
       RELAY_MODE: any
-      INTERNAL_ORIGINS: https://walletconnect-bridge.my-app.local,https://my-app.local
+      INTERNAL_DOMAINS: my-app.local,their-app.local
       SENTRY_DSN: https://xxx@sentry.my-app.local/123
       SENTRY_ENVIRONMENT: live
     stop_grace_period: 15s

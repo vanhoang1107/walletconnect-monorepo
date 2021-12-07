@@ -203,20 +203,20 @@ export class HttpService {
 }
 
 function genWsOptions(): WebSocket.ServerOptions {
-  const originSet: { [key: string]: boolean } = {};
-  (process.env.INTERNAL_ORIGINS || '')
+  const domainSet: { [key: string]: boolean } = {};
+  (process.env.INTERNAL_DOMAINS || '')
     .split(',')
-    .map(o => {
-      originSet[o] = true
-      if (!o.endsWith('/')) {
-        originSet[o + '/'] = true
-      }
-    })
+    .map(d => domainSet[d.trim()] = true)
   return {
     maxPayload: 500 * 1024,
     perMessageDeflate: true,
     verifyClient: ({ origin }): boolean => {
-      if (origin && !originSet[origin]) {
+      if (!origin) {
+        return true
+      }
+      const originURL = new URL(origin);
+      const rootDomain = originURL.hostname.split('.').slice(-2).join('.')
+      if (!domainSet[rootDomain]) {
         Sentry.captureMessage(
           `an external origin init websocket | origin=${origin}`,
           { level: SentrySeverity.Warning },

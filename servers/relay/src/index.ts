@@ -6,13 +6,13 @@ import { HttpService } from "./http";
 
 
 const httpService = new HttpService({
-  logger: config.debug ? "debug" : "warn",
+  logger: config.logLevel,
 })
 const { app, ws } = httpService
 
 Sentry.init({
   dsn: process.env.SENTRY_DSN,
-  debug: config.debug,
+  debug: config.logLevel == "debug",
   logLevel: SentryLogLevel.Error,
   integrations: [
     new CaptureConsole({ levels: ["warn"] }),
