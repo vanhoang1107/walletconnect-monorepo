@@ -1,6 +1,6 @@
 import { EventEmitter } from "events";
 import pino, { Logger } from "pino";
-import KeyValueStorage, { IKeyValueStorage } from "keyvaluestorage";
+import KeyValueStorage from "keyvaluestorage";
 import {
   IClient,
   ClientOptions,
@@ -17,14 +17,21 @@ import {
   isSessionResponded,
   getAppMetadata,
   ERROR,
+  toMiliseconds,
 } from "@walletconnect/utils";
 import { ErrorResponse, JsonRpcRequest } from "@walletconnect/jsonrpc-utils";
-import { generateChildLogger, getDefaultLoggerOptions } from "@walletconnect/logger";
+import {
+  generateChildLogger,
+  getDefaultLoggerOptions,
+  getLoggerContext,
+} from "@walletconnect/logger";
 
 import { Pairing, Session, Relayer } from "./controllers";
 import {
   CLIENT_CONTEXT,
+  CLIENT_DEFAULT,
   CLIENT_BEAT_INTERVAL,
+  CLIENT_SHORT_TIMEOUT,
   CLIENT_EVENTS,
   CLIENT_STORAGE_OPTIONS,
   PAIRING_DEFAULT_TTL,
@@ -38,7 +45,8 @@ import {
   SESSION_JSONRPC,
   SESSION_SIGNAL_METHOD_PAIRING,
 } from "./constants";
-import { Crypto, KeyChain } from "./controllers/crypto";
+import { Crypto } from "./controllers/crypto";
+import { Storage } from "./controllers/storage";
 
 export class Client extends IClient {
   public readonly protocol = "wc";
@@ -50,15 +58,17 @@ export class Client extends IClient {
   public crypto: Crypto;
 
   public relayer: Relayer;
-  public storage: IKeyValueStorage;
+  public storage: Storage;
 
   public pairing: Pairing;
   public session: Session;
 
-  public context: string = CLIENT_CONTEXT;
+  public name: string = CLIENT_CONTEXT;
 
   public readonly controller: boolean;
   public metadata: AppMetadata | undefined;
+
+  public apiKey: string | undefined;
 
   static async init(opts?: ClientOptions): Promise<Client> {
     const client = new Client(opts);
@@ -71,23 +81,29 @@ export class Client extends IClient {
     const logger =
       typeof opts?.logger !== "undefined" && typeof opts?.logger !== "string"
         ? opts.logger
-        : pino(getDefaultLoggerOptions({ level: opts?.logger || "error" }));
+        : pino(getDefaultLoggerOptions({ level: opts?.logger || CLIENT_DEFAULT.logger }));
 
-    this.context = opts?.name || this.context;
-    this.controller = opts?.controller || false;
+    this.name = opts?.name || CLIENT_DEFAULT.name;
+    this.controller = opts?.controller || CLIENT_DEFAULT.controller;
     this.metadata = opts?.metadata || getAppMetadata();
+    this.apiKey = opts?.apiKey;
 
-    const storage =
+    this.logger = generateChildLogger(logger, this.name);
+
+    const keyValueStorage =
       opts?.storage || new KeyValueStorage({ ...CLIENT_STORAGE_OPTIONS, ...opts?.storageOptions });
 
-    this.logger = generateChildLogger(logger, this.context);
-    this.crypto = new Crypto(this, opts?.keychain || new KeyChain(this, storage));
+    this.crypto = new Crypto(this, this.logger, opts?.keychain);
 
     this.relayer = new Relayer(this, this.logger, opts?.relayProvider);
-    this.storage = storage;
+    this.storage = new Storage(this, this.logger, keyValueStorage);
 
     this.pairing = new Pairing(this, this.logger);
     this.session = new Session(this, this.logger);
+  }
+
+  get context(): string {
+    return getLoggerContext(this.logger);
   }
 
   public on(event: string, listener: any): void {
@@ -138,12 +154,12 @@ export class Client extends IClient {
       return session;
     } catch (e) {
       this.logger.debug(`Application Connection Failure`);
-      this.logger.error(e);
+      this.logger.error(e as any);
       throw e;
     }
   }
 
-  public async pair(params: ClientTypes.PairParams): Promise<string> {
+  public async pair(params: ClientTypes.PairParams): Promise<PairingTypes.Settled> {
     this.logger.debug(`Pairing`);
     this.logger.trace({ type: "method", method: "pair", params });
     const proposal = formatPairingProposal(params.uri);
@@ -164,7 +180,8 @@ export class Client extends IClient {
     }
     this.logger.debug(`Pairing Success`);
     this.logger.trace({ type: "method", method: "pair", pending });
-    return pending.outcome.topic;
+    const pairing = await this.pairing.get(pending.outcome.topic);
+    return pairing;
   }
 
   public async approve(params: ClientTypes.ApproveParams): Promise<SessionTypes.Settled> {
@@ -236,6 +253,10 @@ export class Client extends IClient {
     await this.session.send(params.topic, params.response);
   }
 
+  public async ping(params: ClientTypes.PingParams): Promise<void> {
+    await this.session.ping(params.topic, params.timeout);
+  }
+
   public async notify(params: ClientTypes.NotifyParams): Promise<void> {
     await this.session.notify(params);
   }
@@ -275,7 +296,12 @@ export class Client extends IClient {
       pairing.permissions.controller.publicKey === pairing.self.publicKey &&
       typeof pairing.state.metadata === "undefined"
     ) {
-      await this.pairing.update({ topic: pairing.topic, state: { metadata: this.metadata } });
+      setTimeout(
+        async () =>
+          await this.pairing.update({ topic: pairing.topic, state: { metadata: this.metadata } }),
+        // just enough timeout to avoid sporadic race conditions on unit tests
+        CLIENT_SHORT_TIMEOUT,
+      );
     }
   }
   // ---------- Private ----------------------------------------------- //
@@ -283,22 +309,22 @@ export class Client extends IClient {
   private async initialize(): Promise<any> {
     this.logger.trace(`Initialized`);
     try {
-      await this.crypto.init();
-      await this.relayer.init();
       await this.pairing.init();
       await this.session.init();
+      await this.crypto.init();
+      await this.relayer.init();
       this.setBeatInterval();
       this.registerEventListeners();
       this.logger.info(`Client Initilization Success`);
     } catch (e) {
       this.logger.info(`Client Initilization Failure`);
-      this.logger.error(e);
+      this.logger.error(e as any);
       throw e;
     }
   }
 
   private setBeatInterval() {
-    setInterval(() => this.events.emit(CLIENT_EVENTS.beat), CLIENT_BEAT_INTERVAL);
+    setInterval(() => this.events.emit(CLIENT_EVENTS.beat), toMiliseconds(CLIENT_BEAT_INTERVAL));
   }
 
   private registerEventListeners(): void {
@@ -338,6 +364,7 @@ export class Client extends IClient {
     this.pairing.on(PAIRING_EVENTS.request, (requestEvent: PairingTypes.RequestEvent) => {
       this.onPairingRequest(requestEvent.request);
     });
+    this.session.on(PAIRING_EVENTS.sync, () => this.events.emit(CLIENT_EVENTS.pairing.sync));
     // Session Subscription Events
     this.session.on(SESSION_EVENTS.proposed, (pending: SessionTypes.Pending) => {
       const eventName = CLIENT_EVENTS.session.proposal;
@@ -390,6 +417,7 @@ export class Client extends IClient {
         this.events.emit(eventName, notificationEvent);
       },
     );
+    this.session.on(SESSION_EVENTS.sync, () => this.events.emit(CLIENT_EVENTS.session.sync));
   }
 }
 

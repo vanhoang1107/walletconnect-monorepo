@@ -6,12 +6,12 @@ import { RELAY_JSONRPC } from "@walletconnect/relay-api";
 
 import { TEST_RELAY_URL, getTestJsonRpc, Counter } from "./shared";
 import { JsonRpcPayload } from "@walletconnect/jsonrpc-types";
-import { formatJsonRpcResult } from "@walletconnect/jsonrpc-utils";
+import { formatJsonRpcRequest, formatJsonRpcResult } from "@walletconnect/jsonrpc-utils";
 import { generateRandomBytes32 } from "../src/utils";
 
 describe("JSON-RPC", () => {
   it("A can publish to B subscribed to same topic", async () => {
-    const { pub, sub } = getTestJsonRpc();
+    const { topic, pub, sub } = getTestJsonRpc();
 
     const providerA = new JsonRpcProvider(new WsConnection(TEST_RELAY_URL));
     await providerA.connect();
@@ -51,6 +51,35 @@ describe("JSON-RPC", () => {
           expect(data.data.message).to.eql(pub.params.message);
           resolve();
         });
+      }),
+    ]);
+
+    expect(counterB.value).to.eql(1);
+
+    await Promise.all([
+      new Promise<void>(async resolve => {
+        // unsubscribring to topic
+        const unsub = formatJsonRpcRequest(RELAY_JSONRPC.waku.unsubscribe, {
+          topic,
+          id: subscriptionB,
+        });
+        await providerB.request(unsub);
+        resolve();
+      }),
+      new Promise<void>(resolve => {
+        // publishing to topics
+        providerA.request(getTestJsonRpc("SECOND_MESSAGE", topic).pub);
+        resolve();
+      }),
+      new Promise<void>((resolve, reject) => {
+        // evaluating incoming subscriptions
+        providerB.on("message", ({ type, data }) => {
+          counterB.tick();
+          reject();
+        });
+        setTimeout(() => {
+          resolve();
+        }, 1000);
       }),
     ]);
 
@@ -329,5 +358,65 @@ describe("JSON-RPC", () => {
         resolve();
       }, 500);
     });
+  });
+  it("A can publish multiple messages while B is concurrently subscribing", async function() {
+    const topic = generateRandomBytes32();
+    const { sub } = getTestJsonRpc(generateRandomBytes32(), topic);
+
+    const providerA = new JsonRpcProvider(new WsConnection(TEST_RELAY_URL));
+    await providerA.connect();
+
+    const providerB = new JsonRpcProvider(new WsConnection(TEST_RELAY_URL));
+    await providerB.connect();
+
+    // N amount
+    const amount = 1000;
+
+    // acknowledging received payloads
+    providerB.on("payload", (payload: JsonRpcPayload) => {
+      const response = formatJsonRpcResult(payload.id, true);
+      providerB.connection.send(response);
+    });
+
+    // generates N messages with index as content
+    const sent = Array.from(Array(amount)).map((_, i) => String(i + 1));
+
+    // send N messages to topic
+    sent.map(i => {
+      providerA.request(getTestJsonRpc(i, topic).pub);
+    });
+    // subscribe to topic
+    providerB.request(sub);
+
+    const promises: any = [];
+    const received: string[] = [];
+    await Promise.all([
+      await new Promise<void>(resolve => {
+        // evaluating incoming subscriptions
+        providerB.on("message", ({ type, data }) => {
+          if (type === RELAY_JSONRPC.waku.subscription && data.data.topic === topic) {
+            const content = data.data.message;
+            if (!received.includes(content) && sent.includes(content)) {
+              received.push(content);
+            }
+          }
+          if (received.length === amount) {
+            resolve();
+          }
+        });
+      }),
+      // first half
+      sent
+        .slice(0, sent.length / 2)
+        .map(i => promises.push(providerA.request(getTestJsonRpc(i, topic).pub))),
+      // subscribe
+      promises.push(providerB.request),
+      // second half
+      sent
+        .slice(sent.length / 2)
+        .map(i => promises.push(providerA.request(getTestJsonRpc(i, topic).pub))),
+    ]);
+
+    expect(received.length).to.eql(amount);
   });
 });

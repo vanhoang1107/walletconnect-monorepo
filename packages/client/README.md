@@ -4,7 +4,7 @@ Client for WalletConnect Protocol
 
 ## Description
 
-This library provides a Standalone Client for WalletConnect 2.0 Protocol for both Dapps and Wallets. Integration will differ from the perspective of each client as the Proposer and Responder, respectively. It's compatible with NodeJS, Browser and React-Native applications (NodeJS modules required to be polyfilled for React-Native)
+This library provides a Standalone Client for WalletConnect v2.0 Protocol for both Dapps and Wallets. Integration will differ from the perspective of each client as the Proposer and Responder, respectively. It's compatible with NodeJS, Browser and React-Native applications (NodeJS modules required to be polyfilled for React-Native)
 
 ## Documentation
 

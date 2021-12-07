@@ -7,9 +7,9 @@ import {
   SequenceTypes,
   PairingTypes,
   SessionTypes,
-  SubscriptionEvent,
   Validation,
   SignalTypes,
+  StateEvent,
 } from "@walletconnect/types";
 
 import { ERROR } from "./error";
@@ -38,6 +38,12 @@ export function isSequenceResponded(
   return isSequenceRespondedStatus(pending.status) && "outcome" in pending;
 }
 
+export function isSequenceRejected(
+  response: SequenceTypes.Response,
+): response is SequenceTypes.Rejection {
+  return "reason" in response;
+}
+
 export function isSequenceFailed(outcome: SequenceTypes.Outcome): outcome is SequenceTypes.Failed {
   return "reason" in outcome;
 }
@@ -54,6 +60,12 @@ export function isPairingResponded(
   pending: PairingTypes.Pending,
 ): pending is PairingTypes.RespondedPending {
   return isPairingRespondedStatus(pending.status) && "outcome" in pending;
+}
+
+export function isPairingRejected(
+  response: PairingTypes.Response,
+): response is PairingTypes.Rejection {
+  return "reason" in response;
 }
 
 export function isPairingFailed(outcome: PairingTypes.Outcome): outcome is PairingTypes.Failed {
@@ -74,13 +86,19 @@ export function isSessionResponded(
   return isPairingRespondedStatus(pending.status) && "outcome" in pending;
 }
 
+export function isSessionRejected(
+  response: SessionTypes.Response,
+): response is SessionTypes.Rejection {
+  return "reason" in response;
+}
+
 export function isSessionFailed(outcome: SessionTypes.Outcome): outcome is SessionTypes.Failed {
   return "reason" in outcome;
 }
 
-export function isSubscriptionUpdatedEvent<T = any>(
-  event: SubscriptionEvent.Created<T> | SubscriptionEvent.Updated<T>,
-): event is SubscriptionEvent.Updated<T> {
+export function isStateUpdatedEvent<T = any>(
+  event: StateEvent.Created<T> | StateEvent.Updated<T>,
+): event is StateEvent.Updated<T> {
   return "update" in event;
 }
 

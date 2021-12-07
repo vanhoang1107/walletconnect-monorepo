@@ -4,15 +4,22 @@ import {
   SubscriptionEvent,
   IEngine,
   SessionTypes,
+  StateEvent,
+  RelayerTypes,
+  JsonRpcRecord,
 } from "@walletconnect/types";
 import {
+  formatMessageContext,
+  calcExpiry,
+  toMiliseconds,
   generateRandomBytes32,
   hasOverlap,
   isSignalTypePairing,
   isSequenceFailed,
   isSequenceResponded,
-  isSubscriptionUpdatedEvent,
+  isStateUpdatedEvent,
   ERROR,
+  isSequenceRejected,
 } from "@walletconnect/utils";
 import {
   JsonRpcPayload,
@@ -24,13 +31,17 @@ import {
   isJsonRpcError,
   isJsonRpcRequest,
   ErrorResponse,
+  isJsonRpcResponse,
 } from "@walletconnect/jsonrpc-utils";
 
 import {
+  STATE_EVENTS,
   SUBSCRIPTION_EVENTS,
   RELAYER_DEFAULT_PROTOCOL,
   FIVE_MINUTES,
   THIRTY_SECONDS,
+  ONE_DAY,
+  RELAYER_EVENTS,
 } from "../constants";
 
 export class Engine extends IEngine {
@@ -74,16 +85,16 @@ export class Engine extends IEngine {
 
   public async ping(topic: string, timeout?: number): Promise<void> {
     const request = { method: this.sequence.config.jsonrpc.ping, params: {} };
-    return this.request({ topic, request, timeout: timeout || THIRTY_SECONDS * 1000 });
+    return this.request({ topic, request, timeout: timeout || toMiliseconds(THIRTY_SECONDS) });
   }
 
   public async send(topic: string, payload: JsonRpcPayload, chainId?: string): Promise<void> {
+    const originalPayload = payload;
     const settled = await this.sequence.settled.get(topic);
     if (isJsonRpcRequest(payload)) {
       if (!Object.values(this.sequence.config.jsonrpc).includes(payload.method)) {
         await this.isJsonRpcAuthorized(topic, settled.self, payload);
         await this.sequence.validateRequest({ topic, request: payload, chainId });
-        await this.sequence.history.set(topic, payload, chainId);
         const params = {
           chainId,
           request: { method: payload.method, params: payload.params },
@@ -95,12 +106,17 @@ export class Engine extends IEngine {
           payload.id,
         );
       }
-    } else {
-      await this.sequence.history.update(topic, payload);
     }
     await this.sequence.client.relayer.publish(settled.topic, payload, {
       relay: settled.relay,
     });
+    if (
+      isJsonRpcResponse(originalPayload) ||
+      (isJsonRpcRequest(originalPayload) &&
+        !Object.values(this.sequence.config.jsonrpc).includes(originalPayload.method))
+    ) {
+      await this.recordPayloadEvent({ topic, payload: originalPayload, chainId });
+    }
   }
 
   get length(): number {
@@ -112,17 +128,17 @@ export class Engine extends IEngine {
   }
 
   get values(): SequenceTypes.Settled[] {
-    return this.sequence.settled.values.map(x => x.data);
+    return this.sequence.settled.values;
   }
 
   public create(params?: SequenceTypes.CreateParams): Promise<SequenceTypes.Settled> {
     return new Promise(async (resolve, reject) => {
       this.sequence.logger.debug(`Create ${this.sequence.context}`);
       this.sequence.logger.trace({ type: "method", method: "create", params });
-      const maxTimeout = params?.timeout || FIVE_MINUTES * 1000;
+      const maxTimeout = params?.timeout || toMiliseconds(FIVE_MINUTES);
       const timeout = setTimeout(() => {
         const error = ERROR.SETTLE_TIMEOUT.format({
-          context: this.sequence.context,
+          context: this.sequence.name,
           timeout: maxTimeout,
         });
         this.sequence.logger.error(error.message);
@@ -136,11 +152,11 @@ export class Engine extends IEngine {
         return reject(e);
       }
       this.sequence.pending.on(
-        SUBSCRIPTION_EVENTS.updated,
-        async (updatedEvent: SubscriptionEvent.Updated<SequenceTypes.Pending>) => {
-          if (pending.topic !== updatedEvent.data.topic) return;
-          if (isSequenceResponded(updatedEvent.data)) {
-            const outcome = updatedEvent.data.outcome;
+        STATE_EVENTS.updated,
+        async (updatedEvent: StateEvent.Updated<SequenceTypes.Pending>) => {
+          if (pending.topic !== updatedEvent.sequence.topic) return;
+          if (isSequenceResponded(updatedEvent.sequence)) {
+            const outcome = updatedEvent.sequence.outcome;
             clearTimeout(timeout);
             if (isSequenceFailed(outcome)) {
               try {
@@ -152,7 +168,7 @@ export class Engine extends IEngine {
             } else {
               try {
                 const settled = await this.sequence.settled.get(outcome.topic);
-                const reason = ERROR.SETTLED.format({ context: this.sequence.context });
+                const reason = ERROR.SETTLED.format({ context: this.sequence.name });
                 await this.sequence.pending.delete(pending.topic, reason);
                 resolve(settled);
               } catch (e) {
@@ -183,7 +199,7 @@ export class Engine extends IEngine {
           metadata: response?.metadata,
         };
         if (!responder.metadata) delete responder.metadata;
-        const expiry = Date.now() + proposal.ttl * 1000;
+        const expiry = calcExpiry(proposal.ttl);
         const state: SequenceTypes.State = response?.state || {};
         const peer: SequenceTypes.Participant = {
           publicKey: proposal.proposer.publicKey,
@@ -221,10 +237,10 @@ export class Engine extends IEngine {
           proposal,
           outcome,
         };
-        await this.sequence.pending.set(pending.topic, pending, { relay: pending.relay });
+        await this.sequence.pending.set(pending.topic, pending);
         return pending;
       } catch (e) {
-        const reason = ERROR.GENERIC.format({ message: e.message });
+        const reason = ERROR.GENERIC.format({ message: (e as any).message });
         const outcome: SequenceTypes.Outcome = { reason };
         const pending: SequenceTypes.Pending = {
           status: this.sequence.config.status.responded as SequenceTypes.RespondedStatus,
@@ -234,11 +250,11 @@ export class Engine extends IEngine {
           proposal,
           outcome,
         };
-        await this.sequence.pending.set(pending.topic, pending, { relay: pending.relay });
+        await this.sequence.pending.set(pending.topic, pending);
         return pending;
       }
     } else {
-      const defaultReason = ERROR.NOT_APPROVED.format({ context: this.sequence.context });
+      const defaultReason = ERROR.NOT_APPROVED.format({ context: this.sequence.name });
       const outcome: SequenceTypes.Outcome = { reason: params?.reason || defaultReason };
       const pending: SequenceTypes.Pending = {
         status: this.sequence.config.status.responded as SequenceTypes.RespondedStatus,
@@ -248,7 +264,7 @@ export class Engine extends IEngine {
         proposal,
         outcome,
       };
-      await this.sequence.pending.set(pending.topic, pending, { relay: pending.relay });
+      await this.sequence.pending.set(pending.topic, pending);
       return pending;
     }
   }
@@ -283,7 +299,7 @@ export class Engine extends IEngine {
         return reject(e);
       }
       const request = formatJsonRpcRequest(params.request.method, params.request.params);
-      const maxTimeout = params?.timeout || FIVE_MINUTES * 1000;
+      const maxTimeout = params?.timeout || toMiliseconds(FIVE_MINUTES);
       const timeout = setTimeout(() => {
         const error = ERROR.JSONRPC_REQUEST_TIMEOUT.format({
           method: request.method,
@@ -323,9 +339,9 @@ export class Engine extends IEngine {
   }
 
   public async notify(params: SequenceTypes.NotifyParams): Promise<void> {
+    const { topic, notification } = params;
     const settled = await this.sequence.settled.get(params.topic);
-    await this.isNotificationAuthorized(params.topic, settled.self, params.type);
-    const notification: SequenceTypes.Notification = { type: params.type, data: params.data };
+    await this.isNotificationAuthorized(params.topic, settled.self, notification.type);
     const request = formatJsonRpcRequest(this.sequence.config.jsonrpc.notification, notification);
     await this.send(params.topic, request);
   }
@@ -368,7 +384,7 @@ export class Engine extends IEngine {
       self,
       proposal,
     };
-    await this.sequence.pending.set(pending.topic, pending, { relay });
+    await this.sequence.pending.set(pending.topic, pending);
     return pending;
   }
 
@@ -385,32 +401,29 @@ export class Engine extends IEngine {
       expiry: params.expiry,
       state: params.state,
     };
-    await this.sequence.settled.set(settled.topic, settled, {
-      relay: settled.relay,
-      expiry: settled.expiry,
-    });
+    await this.sequence.settled.set(settled.topic, settled);
     return settled;
   }
 
-  public async onResponse(payloadEvent: SubscriptionEvent.Payload): Promise<void> {
+  public async onResponse(payloadEvent: RelayerTypes.PayloadEvent): Promise<void> {
     const { topic, payload } = payloadEvent;
     this.sequence.logger.debug(`Receiving ${this.sequence.context} response`);
     this.sequence.logger.trace({ type: "method", method: "onResponse", topic, payload });
-    const request = payload as JsonRpcRequest<SequenceTypes.Outcome>;
-    const outcome = request.params;
+    const request = payload as JsonRpcRequest<SequenceTypes.Response>;
+    const response = request.params;
     const pending = await this.sequence.pending.get(topic);
     let error: ErrorResponse | undefined;
-    if (!isSequenceFailed(outcome)) {
+    if (!isSequenceRejected(response)) {
       try {
         const controller = pending.proposal.proposer.controller
           ? { publicKey: pending.proposal.proposer.publicKey }
-          : { publicKey: outcome.responder.publicKey };
+          : { publicKey: response.responder.publicKey };
         const peer: SequenceTypes.Participant = {
-          publicKey: outcome.responder.publicKey,
-          metadata: outcome.responder.metadata,
+          publicKey: response.responder.publicKey,
+          metadata: response.responder.metadata,
         };
         if (!peer.metadata) delete peer.metadata;
-        const state: SequenceTypes.State = outcome.state || {};
+        const state: SequenceTypes.State = response.state || {};
         const permissions: SequenceTypes.Permissions = {
           ...pending.proposal.permissions,
           controller,
@@ -421,44 +434,47 @@ export class Engine extends IEngine {
           peer,
           permissions,
           ttl: pending.proposal.ttl,
-          expiry: outcome.expiry,
+          expiry: response.expiry,
           state,
         });
+        const outcome = {
+          topic: settled.topic,
+          relay: settled.relay,
+          responder: response.responder,
+          expiry: settled.expiry,
+          state: settled.state,
+        };
         await this.sequence.pending.update(topic, {
           status: this.sequence.config.status.responded as SequenceTypes.RespondedStatus,
-          outcome: {
-            topic: settled.topic,
-            relay: settled.relay,
-            responder: outcome.responder,
-            expiry: settled.expiry,
-            state: settled.state,
-          },
+          outcome,
         });
       } catch (e) {
-        this.sequence.logger.error(e);
-        error = ERROR.GENERIC.format({ message: e.message });
+        this.sequence.logger.error(e as any);
+        error = ERROR.GENERIC.format({ message: (e as any).message });
         await this.sequence.pending.update(topic, {
           status: this.sequence.config.status.responded as SequenceTypes.RespondedStatus,
           outcome: { reason: error },
         });
       }
-      const response =
+      await this.sequence.client.relayer.publish(
+        pending.topic,
         typeof error === "undefined"
           ? formatJsonRpcResult(request.id, true)
-          : formatJsonRpcError(request.id, error);
-      await this.sequence.client.relayer.publish(pending.topic, response, {
-        relay: pending.relay,
-      });
+          : formatJsonRpcError(request.id, error),
+        {
+          relay: pending.relay,
+        },
+      );
     } else {
-      this.sequence.logger.error(outcome.reason);
+      this.sequence.logger.error(response.reason);
       await this.sequence.pending.update(topic, {
         status: this.sequence.config.status.responded as SequenceTypes.RespondedStatus,
-        outcome: { reason: outcome.reason },
+        outcome: { reason: response.reason },
       });
     }
   }
 
-  public async onAcknowledge(payloadEvent: SubscriptionEvent.Payload): Promise<void> {
+  public async onAcknowledge(payloadEvent: RelayerTypes.PayloadEvent): Promise<void> {
     const { topic, payload } = payloadEvent;
     this.sequence.logger.debug(`Receiving ${this.sequence.context} acknowledge`);
     this.sequence.logger.trace({ type: "method", method: "onAcknowledge", topic, payload });
@@ -468,11 +484,11 @@ export class Engine extends IEngine {
     if (isJsonRpcError(response) && !isSequenceFailed(pending.outcome)) {
       await this.sequence.settled.delete(pending.outcome.topic, response.error);
     }
-    const reason = ERROR.RESPONSE_ACKNOWLEDGED.format({ context: this.sequence.context });
+    const reason = ERROR.RESPONSE_ACKNOWLEDGED.format({ context: this.sequence.name });
     await this.sequence.pending.delete(topic, reason);
   }
 
-  public async onMessage(payloadEvent: SubscriptionEvent.Payload): Promise<void> {
+  public async onMessage(payloadEvent: RelayerTypes.PayloadEvent): Promise<void> {
     const { topic, payload } = payloadEvent;
     this.sequence.logger.debug(`Receiving ${this.sequence.context} message`);
     this.sequence.logger.trace({ type: "method", method: "onMessage", topic, payload });
@@ -510,7 +526,7 @@ export class Engine extends IEngine {
     }
   }
 
-  public async onPayload(payloadEvent: SubscriptionEvent.Payload): Promise<void> {
+  public async onPayload(payloadEvent: RelayerTypes.PayloadEvent): Promise<void> {
     const { topic, payload } = payloadEvent;
     if (isJsonRpcRequest(payload)) {
       const { id, params } = payload as JsonRpcRequest<SequenceTypes.Request>;
@@ -538,7 +554,7 @@ export class Engine extends IEngine {
     }
   }
 
-  public async onUpdate(payloadEvent: SubscriptionEvent.Payload): Promise<void> {
+  public async onUpdate(payloadEvent: RelayerTypes.PayloadEvent): Promise<void> {
     const { topic, payload } = payloadEvent;
     this.sequence.logger.debug(`Receiving ${this.sequence.context} update`);
     this.sequence.logger.trace({ type: "method", method: "onUpdate", topic, payload });
@@ -550,13 +566,13 @@ export class Engine extends IEngine {
       const response = formatJsonRpcResult(request.id, true);
       await this.send(settled.topic, response);
     } catch (e) {
-      this.sequence.logger.error(e);
-      const response = formatJsonRpcError(request.id, e.message);
+      this.sequence.logger.error(e as any);
+      const response = formatJsonRpcError(request.id, (e as any).message);
       await this.send(settled.topic, response);
     }
   }
 
-  public async onUpgrade(payloadEvent: SubscriptionEvent.Payload): Promise<void> {
+  public async onUpgrade(payloadEvent: RelayerTypes.PayloadEvent): Promise<void> {
     const { topic, payload } = payloadEvent;
     this.sequence.logger.debug(`Receiving ${this.sequence.context} upgrade`);
     this.sequence.logger.trace({ type: "method", method: "onUpgrade", topic, payload });
@@ -568,21 +584,17 @@ export class Engine extends IEngine {
       const response = formatJsonRpcResult(request.id, true);
       await this.send(settled.topic, response);
     } catch (e) {
-      this.sequence.logger.error(e);
-      const response = formatJsonRpcError(request.id, e.message);
+      this.sequence.logger.error(e as any);
+      const response = formatJsonRpcError(request.id, (e as any).message);
       await this.send(settled.topic, response);
     }
   }
 
-  protected async onNotification(event: SubscriptionEvent.Payload) {
+  protected async onNotification(event: RelayerTypes.PayloadEvent) {
     const notification = (event.payload as JsonRpcRequest<SessionTypes.Notification>).params;
     const settled = await this.sequence.settled.get(event.topic);
     await this.isNotificationAuthorized(event.topic, settled.peer, notification.type);
-    const notificationEvent: SessionTypes.NotificationEvent = {
-      topic: event.topic,
-      type: notification.type,
-      data: notification.data,
-    };
+    const notificationEvent: SessionTypes.NotificationEvent = { topic: event.topic, notification };
     const eventName = this.sequence.config.events.notification;
     this.sequence.logger.info(`Emitting ${eventName}`);
     this.sequence.logger.debug({ type: "event", event: eventName, notificationEvent });
@@ -595,14 +607,14 @@ export class Engine extends IEngine {
     participant: SequenceTypes.Participant,
   ): Promise<SequenceTypes.Update> {
     if (typeof update.state === "undefined") {
-      const error = ERROR.INVALID_UPDATE_REQUEST.format({ context: this.sequence.context });
+      const error = ERROR.INVALID_UPDATE_REQUEST.format({ context: this.sequence.name });
       this.sequence.logger.error(error.message);
       throw new Error(error.message);
     }
     const settled = await this.sequence.settled.get(topic);
     if (participant.publicKey !== settled.permissions.controller.publicKey) {
       const error = ERROR.UNAUTHORIZED_UPDATE_REQUEST.format({
-        context: this.sequence.context,
+        context: this.sequence.name,
       });
       this.sequence.logger.error(error.message);
       throw new Error(error.message);
@@ -618,14 +630,14 @@ export class Engine extends IEngine {
     participant: SequenceTypes.Participant,
   ): Promise<SequenceTypes.Upgrade> {
     if (typeof upgrade.permissions === "undefined") {
-      const error = ERROR.INVALID_UPGRADE_REQUEST.format({ context: this.sequence.context });
+      const error = ERROR.INVALID_UPGRADE_REQUEST.format({ context: this.sequence.name });
       this.sequence.logger.error(error.message);
       throw new Error(error.message);
     }
     const settled = await this.sequence.settled.get(topic);
     if (participant.publicKey !== settled.permissions.controller.publicKey) {
       const error = ERROR.UNAUTHORIZED_UPGRADE_REQUEST.format({
-        context: this.sequence.context,
+        context: this.sequence.name,
       });
       this.sequence.logger.error(error.message);
       throw new Error(error.message);
@@ -669,12 +681,31 @@ export class Engine extends IEngine {
     }
   }
 
+  private async recordPayloadEvent(payloadEvent: SequenceTypes.PayloadEvent) {
+    const { topic, payload, chainId } = payloadEvent;
+    if (isJsonRpcRequest(payload)) {
+      await this.sequence.history.set(topic, payload, chainId);
+    } else {
+      await this.sequence.history.resolve(payload);
+    }
+  }
+
   private async shouldIgnorePayloadEvent(payloadEvent: SequenceTypes.PayloadEvent) {
     const { topic, payload } = payloadEvent;
-    if (!this.sequence.settled.subscriptions.has(topic)) return true;
+    if (!this.sequence.settled.sequences.has(topic)) return true;
     let exists = false;
     try {
-      exists = await this.sequence.history.exists(topic, payload.id);
+      if (isJsonRpcRequest(payload)) {
+        exists = await this.sequence.history.exists(topic, payload.id);
+      } else {
+        let record: JsonRpcRecord | undefined;
+        try {
+          record = await this.sequence.history.get(topic, payload.id);
+        } catch (e) {
+          // skip error
+        }
+        exists = typeof record !== "undefined" && typeof record.response !== "undefined";
+      }
     } catch (e) {
       // skip error
     }
@@ -683,28 +714,24 @@ export class Engine extends IEngine {
 
   private async onPayloadEvent(payloadEvent: SequenceTypes.PayloadEvent) {
     const { topic, payload, chainId } = payloadEvent;
-    if (isJsonRpcRequest(payload)) {
-      if (await this.shouldIgnorePayloadEvent(payloadEvent)) return;
-      await this.sequence.history.set(topic, payload, chainId);
-    } else {
-      await this.sequence.history.update(topic, payload);
-    }
+    if (await this.shouldIgnorePayloadEvent(payloadEvent)) return;
     if (isJsonRpcRequest(payload)) {
       const requestEvent: SequenceTypes.RequestEvent = { topic, request: payload, chainId };
       const eventName = this.sequence.config.events.request;
       this.sequence.logger.info(`Emitting ${eventName}`);
-      this.sequence.logger.debug({ type: "event", event: eventName, data: requestEvent });
+      this.sequence.logger.debug({ type: "event", event: eventName, sequence: requestEvent });
       this.sequence.events.emit(eventName, requestEvent);
     } else {
       const responseEvent: SequenceTypes.ResponseEvent = { topic, response: payload, chainId };
       const eventName = this.sequence.config.events.response;
       this.sequence.logger.info(`Emitting ${eventName}`);
-      this.sequence.logger.debug({ type: "event", event: eventName, data: responseEvent });
+      this.sequence.logger.debug({ type: "event", event: eventName, sequence: responseEvent });
       this.sequence.events.emit(eventName, responseEvent);
     }
+    await this.recordPayloadEvent(payloadEvent);
   }
 
-  private async onPendingPayloadEvent(event: SubscriptionEvent.Payload) {
+  private async onPendingPayloadEvent(event: RelayerTypes.PayloadEvent) {
     if (isJsonRpcRequest(event.payload)) {
       switch (event.payload.method) {
         case this.sequence.config.jsonrpc.approve:
@@ -720,11 +747,9 @@ export class Engine extends IEngine {
   }
 
   private async onPendingStatusEvent(
-    event:
-      | SubscriptionEvent.Created<SequenceTypes.Pending>
-      | SubscriptionEvent.Updated<SequenceTypes.Pending>,
+    event: StateEvent.Created<SequenceTypes.Pending> | StateEvent.Updated<SequenceTypes.Pending>,
   ) {
-    const pending = event.data;
+    const { sequence: pending } = event;
     if (isSignalTypePairing(pending.proposal.signal)) {
       if (!(await this.sequence.client.crypto.hasKeys(pending.proposal.topic))) {
         const pairing = await this.sequence.client.pairing.settled.get(
@@ -740,21 +765,30 @@ export class Engine extends IEngine {
     if (isSequenceResponded(pending)) {
       const eventName = this.sequence.config.events.responded;
       this.sequence.logger.info(`Emitting ${eventName}`);
-      this.sequence.logger.debug({ type: "event", event: eventName, data: pending });
+      this.sequence.logger.debug({ type: "event", event: eventName, sequence: pending });
       this.sequence.events.emit(eventName, pending);
-      if (!isSubscriptionUpdatedEvent(event)) {
-        const method = !isSequenceFailed(pending.outcome)
+      if (!isStateUpdatedEvent(event)) {
+        const { topic, outcome, relay } = pending;
+        const method = !isSequenceFailed(outcome)
           ? this.sequence.config.jsonrpc.approve
           : this.sequence.config.jsonrpc.reject;
-        const request = formatJsonRpcRequest(method, pending.outcome);
-        await this.sequence.client.relayer.publish(pending.topic, request, {
-          relay: pending.relay,
-        });
+        const params: SequenceTypes.Response = !isSequenceFailed(outcome)
+          ? {
+              relay: outcome.relay,
+              responder: outcome.responder,
+              expiry: outcome.expiry,
+              state: outcome.state,
+            }
+          : {
+              reason: outcome.reason,
+            };
+        const request = formatJsonRpcRequest(method, params);
+        await this.sequence.client.relayer.publish(topic, request, { relay });
       }
     } else {
       const eventName = this.sequence.config.events.proposed;
       this.sequence.logger.info(`Emitting ${eventName}`);
-      this.sequence.logger.debug({ type: "event", event: eventName, data: pending });
+      this.sequence.logger.debug({ type: "event", event: eventName, sequence: pending });
       this.sequence.events.emit(eventName, pending);
       if (isSignalTypePairing(pending.proposal.signal)) {
         // send proposal signal through existing pairing
@@ -767,70 +801,117 @@ export class Engine extends IEngine {
     }
   }
 
+  private async subscribeNewPending(createdEvent: StateEvent.Created<SequenceTypes.Pending>) {
+    const { topic, sequence: pending } = createdEvent;
+    const expiry = calcExpiry(ONE_DAY);
+    await this.sequence.client.relayer.subscribe(topic, expiry, {
+      relay: pending.relay,
+    });
+  }
+
+  private async subscribeNewSettled(createdEvent: StateEvent.Created<SequenceTypes.Settled>) {
+    const { topic, sequence: settled } = createdEvent;
+    await this.sequence.client.relayer.subscribe(topic, settled.expiry, {
+      relay: settled.relay,
+    });
+  }
+
   private registerEventListeners(): void {
-    // Pending Subscription Events
+    // Pending Events
     this.sequence.pending.on(
-      SUBSCRIPTION_EVENTS.payload,
-      (payloadEvent: SubscriptionEvent.Payload) => this.onPendingPayloadEvent(payloadEvent),
+      STATE_EVENTS.created,
+      async (createdEvent: StateEvent.Created<SequenceTypes.Pending>) => {
+        await this.subscribeNewPending(createdEvent);
+        await this.onPendingStatusEvent(createdEvent);
+      },
     );
     this.sequence.pending.on(
-      SUBSCRIPTION_EVENTS.created,
-      (createdEvent: SubscriptionEvent.Created<SequenceTypes.Pending>) =>
-        this.onPendingStatusEvent(createdEvent),
+      STATE_EVENTS.updated,
+      async (updatedEvent: StateEvent.Updated<SequenceTypes.Pending>) =>
+        await this.onPendingStatusEvent(updatedEvent),
     );
     this.sequence.pending.on(
-      SUBSCRIPTION_EVENTS.updated,
-      (updatedEvent: SubscriptionEvent.Updated<SequenceTypes.Pending>) =>
-        this.onPendingStatusEvent(updatedEvent),
+      STATE_EVENTS.deleted,
+      async (deletedEvent: StateEvent.Deleted<SequenceTypes.Pending>) => {
+        if (deletedEvent.reason.code !== ERROR.EXPIRED.code) {
+          await this.sequence.client.relayer.unsubscribeByTopic(deletedEvent.topic, {
+            relay: deletedEvent.sequence.relay,
+          });
+        }
+      },
     );
-    // Settled Subscription Events
+    // Settled Events
     this.sequence.settled.on(
-      SUBSCRIPTION_EVENTS.payload,
-      (payloadEvent: SubscriptionEvent.Payload) => this.onMessage(payloadEvent),
-    );
-    this.sequence.settled.on(
-      SUBSCRIPTION_EVENTS.created,
-      (createdEvent: SubscriptionEvent.Created<SequenceTypes.Settled>) => {
-        const { data: settled } = createdEvent;
+      STATE_EVENTS.created,
+      async (createdEvent: StateEvent.Created<SequenceTypes.Settled>) => {
+        await this.subscribeNewSettled(createdEvent);
+        const { sequence: settled } = createdEvent;
         const eventName = this.sequence.config.events.settled;
         this.sequence.logger.info(`Emitting ${eventName}`);
-        this.sequence.logger.debug({ type: "event", event: eventName, data: settled });
+        this.sequence.logger.debug({ type: "event", event: eventName, sequence: settled });
         this.sequence.events.emit(eventName, settled);
       },
     );
     this.sequence.settled.on(
-      SUBSCRIPTION_EVENTS.updated,
-      (updatedEvent: SubscriptionEvent.Updated<SequenceTypes.Settled>) => {
-        const { data: settled, update } = updatedEvent;
+      STATE_EVENTS.updated,
+      async (updatedEvent: StateEvent.Updated<SequenceTypes.Settled>) => {
+        const { sequence: settled, update } = updatedEvent;
         const eventName = this.sequence.config.events.updated;
         this.sequence.logger.info(`Emitting ${eventName}`);
-        this.sequence.logger.debug({ type: "event", event: eventName, data: settled, update });
+        this.sequence.logger.debug({ type: "event", event: eventName, sequence: settled, update });
         this.sequence.events.emit(eventName, settled, update);
       },
     );
     this.sequence.settled.on(
-      SUBSCRIPTION_EVENTS.deleted,
-      async (deletedEvent: SubscriptionEvent.Deleted<SequenceTypes.Settled>) => {
-        const { data: settled, reason } = deletedEvent;
+      STATE_EVENTS.deleted,
+      async (deletedEvent: StateEvent.Deleted<SequenceTypes.Settled>) => {
+        const { sequence: settled, reason } = deletedEvent;
         const eventName = this.sequence.config.events.deleted;
         this.sequence.logger.info(`Emitting ${eventName}`);
-        this.sequence.logger.debug({ type: "event", event: eventName, data: settled, reason });
+        this.sequence.logger.debug({ type: "event", event: eventName, sequence: settled, reason });
         this.sequence.events.emit(eventName, settled, reason);
         const request = formatJsonRpcRequest(this.sequence.config.jsonrpc.delete, { reason });
         await this.sequence.history.delete(settled.topic);
         await this.sequence.client.relayer.publish(settled.topic, request, {
           relay: settled.relay,
         });
+        if (deletedEvent.reason.code !== ERROR.EXPIRED.code) {
+          await this.sequence.client.relayer.unsubscribeByTopic(settled.topic, {
+            relay: settled.relay,
+          });
+        }
       },
     );
-    this.sequence.settled.on(SUBSCRIPTION_EVENTS.sync, () =>
+    this.sequence.settled.on(STATE_EVENTS.sync, () =>
       this.sequence.events.emit(this.sequence.config.events.sync),
     );
-    this.sequence.settled.on(SUBSCRIPTION_EVENTS.enabled, () =>
-      this.sequence.events.emit(this.sequence.config.events.enabled),
+    // Relayer Events
+    this.sequence.client.relayer.on(
+      RELAYER_EVENTS.payload,
+      (payloadEvent: RelayerTypes.PayloadEvent) => {
+        if (this.sequence.pending.sequences.has(payloadEvent.topic)) {
+          this.onPendingPayloadEvent(payloadEvent);
+        } else if (this.sequence.settled.sequences.has(payloadEvent.topic)) {
+          this.onMessage(payloadEvent);
+        }
+      },
     );
-    this.sequence.settled.on(SUBSCRIPTION_EVENTS.disabled, () =>
-      this.sequence.events.emit(this.sequence.config.events.disabled),
+    // Relayer subscription Events
+    this.sequence.client.relayer.subscriptions.on(
+      SUBSCRIPTION_EVENTS.expired,
+      async (expiredEvent: SubscriptionEvent.Deleted) => {
+        if (this.sequence.pending.sequences.has(expiredEvent.topic)) {
+          const reason = ERROR.EXPIRED.format({
+            context: formatMessageContext(this.sequence.pending.context),
+          });
+          this.sequence.pending.delete(expiredEvent.topic, reason);
+        } else if (this.sequence.settled.sequences.has(expiredEvent.topic)) {
+          const reason = ERROR.EXPIRED.format({
+            context: formatMessageContext(this.sequence.settled.context),
+          });
+          this.sequence.settled.delete(expiredEvent.topic, reason);
+        }
+      },
     );
   }
 }

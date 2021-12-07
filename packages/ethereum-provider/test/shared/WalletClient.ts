@@ -1,6 +1,7 @@
 import { ethers, utils } from "ethers";
 import Client, { CLIENT_EVENTS } from "@walletconnect/client";
 import { ClientOptions, IClient, SessionTypes } from "@walletconnect/types";
+import { ERROR } from "@walletconnect/utils";
 import { SIGNER_EVENTS } from "@walletconnect/signer-connection";
 import { formatJsonRpcError, formatJsonRpcResult } from "@walletconnect/jsonrpc-utils";
 
@@ -53,6 +54,12 @@ export class WalletClient {
     await this.updateChainId();
   }
 
+  public async disconnect() {
+    if (!this.client) return;
+    if (!this.topic) return;
+    await this.client.disconnect({ topic: this.topic, reason: ERROR.USER_DISCONNECTED.format() });
+  }
+
   private setAccount(privateKey: string) {
     this.signer = this.getWallet(privateKey);
   }
@@ -70,21 +77,15 @@ export class WalletClient {
   private async emitAccountsChangedEvent() {
     if (typeof this.client === "undefined") return;
     if (typeof this.topic === "undefined") return;
-    await this.client.notify({
-      topic: this.topic,
-      type: "accountsChanged",
-      data: [this.signer.address],
-    });
+    const notification = { type: "accountsChanged", data: [this.signer.address] };
+    await this.client.notify({ topic: this.topic, notification });
   }
 
   private async emitChainChangedEvent() {
     if (typeof this.client === "undefined") return;
     if (typeof this.topic === "undefined") return;
-    await this.client.notify({
-      topic: this.topic,
-      type: "chainChanged",
-      data: this.chainId,
-    });
+    const notification = { type: "chainChanged", data: this.chainId };
+    await this.client.notify({ topic: this.topic, notification });
   }
 
   private getWallet(privateKey?: string) {

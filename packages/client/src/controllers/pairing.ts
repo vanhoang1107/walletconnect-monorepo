@@ -1,13 +1,13 @@
 import { EventEmitter } from "events";
 import { Logger } from "pino";
-import { generateChildLogger } from "@walletconnect/logger";
-import { PairingTypes, IClient, IPairing, ISequence, IEngine } from "@walletconnect/types";
-import { formatUri } from "@walletconnect/utils";
+import { generateChildLogger, getLoggerContext } from "@walletconnect/logger";
+import { PairingTypes, IClient, IPairing } from "@walletconnect/types";
 import { JsonRpcPayload } from "@walletconnect/jsonrpc-utils";
+import { formatUri, mergeArrays } from "@walletconnect/utils";
 
-import { Subscription } from "./subscription";
-import { JsonRpcHistory } from "./history";
+import { State } from "./state";
 import { Engine } from "./engine";
+import { JsonRpcHistory } from "./history";
 import {
   PAIRING_CONTEXT,
   PAIRING_EVENTS,
@@ -19,13 +19,13 @@ import {
 } from "../constants";
 
 export class Pairing extends IPairing {
-  public pending: Subscription<PairingTypes.Pending>;
-  public settled: Subscription<PairingTypes.Settled>;
+  public pending: State<PairingTypes.Pending>;
+  public settled: State<PairingTypes.Settled>;
   public history: JsonRpcHistory;
 
   public events = new EventEmitter();
 
-  public context: string = PAIRING_CONTEXT;
+  public name: string = PAIRING_CONTEXT;
 
   public config = {
     status: PAIRING_STATUS,
@@ -37,17 +37,9 @@ export class Pairing extends IPairing {
 
   constructor(public client: IClient, public logger: Logger) {
     super(client, logger);
-    this.logger = generateChildLogger(logger, this.context);
-    this.pending = new Subscription<PairingTypes.Pending>(
-      client,
-      this.logger,
-      this.config.status.pending,
-    );
-    this.settled = new Subscription<PairingTypes.Settled>(
-      client,
-      this.logger,
-      this.config.status.settled,
-    );
+    this.logger = generateChildLogger(logger, this.name);
+    this.pending = new State<PairingTypes.Pending>(client, this.logger, this.config.status.pending);
+    this.settled = new State<PairingTypes.Settled>(client, this.logger, this.config.status.settled);
     this.history = new JsonRpcHistory(client, this.logger);
     this.engine = new Engine(this) as PairingTypes.Engine;
   }
@@ -75,6 +67,10 @@ export class Pairing extends IPairing {
     return this.engine.send(topic, payload);
   }
 
+  get context(): string {
+    return getLoggerContext(this.logger);
+  }
+
   get length(): number {
     return this.settled.length;
   }
@@ -84,7 +80,7 @@ export class Pairing extends IPairing {
   }
 
   get values(): PairingTypes.Settled[] {
-    return this.settled.values.map(x => x.data);
+    return this.settled.values;
   }
 
   public create(params?: PairingTypes.CreateParams): Promise<PairingTypes.Settled> {
@@ -138,20 +134,21 @@ export class Pairing extends IPairing {
     };
     return state;
   }
+
   public async mergeUpgrade(topic: string, upgrade: PairingTypes.Upgrade) {
     const settled = await this.settled.get(topic);
     const permissions = {
       jsonrpc: {
-        methods: [
-          ...settled.permissions.jsonrpc.methods,
-          ...(upgrade.permissions.jsonrpc?.methods || []),
-        ],
+        methods: mergeArrays(
+          settled.permissions.jsonrpc.methods,
+          upgrade.permissions.jsonrpc?.methods || [],
+        ),
       },
       notifications: {
-        types: [
-          ...settled.permissions.notifications?.types,
-          ...(upgrade.permissions.notifications?.types || []),
-        ],
+        types: mergeArrays(
+          settled.permissions.notifications?.types || [],
+          upgrade.permissions.notifications?.types || [],
+        ),
       },
       controller: settled.permissions.controller,
     };

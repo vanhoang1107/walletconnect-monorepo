@@ -102,6 +102,12 @@ class CosmosProvider {
   // ---------- Private ----------------------------------------------- //
 
   private registerEventListeners() {
+    this.signer.on("connect", async () => {
+      const chains = (this.signer.connection as SignerConnection).chains;
+      if (chains && chains.length) this.setChainId(chains);
+      const accounts = (this.signer.connection as SignerConnection).accounts;
+      if (accounts && accounts.length) this.setAccounts(accounts);
+    });
     this.signer.connection.on(SIGNER_EVENTS.created, (session: SessionTypes.Settled) => {
       this.setChainId(session.permissions.blockchain.chains);
       this.setAccounts(session.state.accounts);
@@ -118,6 +124,9 @@ class CosmosProvider {
         this.events.emit(notification.type, notification.data);
       },
     );
+    this.signer.on("disconnect", () => {
+      this.events.emit("disconnect");
+    });
     this.events.on(providerEvents.changed.chains, chains => this.setHttpProvider(chains));
   }
 

@@ -2,7 +2,7 @@ import "mocha";
 import sinon from "sinon";
 import { KeyValueStorage } from "keyvaluestorage";
 import { SessionTypes } from "@walletconnect/types";
-import { ERROR, generateRandomBytes32 } from "@walletconnect/utils";
+import { ERROR, fromMiliseconds, generateRandomBytes32 } from "@walletconnect/utils";
 
 import {
   expect,
@@ -20,14 +20,6 @@ import { CLIENT_EVENTS } from "../src";
 import { ErrorResponse, formatJsonRpcResult } from "@walletconnect/jsonrpc-utils";
 
 describe("Session", function() {
-  this.timeout(TEST_TIMEOUT_DURATION);
-  let clock: sinon.SinonFakeTimers;
-  beforeEach(function() {
-    clock = sinon.useFakeTimers(Date.now());
-  });
-  afterEach(function() {
-    clock.restore();
-  });
   it("A proposes session and B approves", async () => {
     const { setup, clients } = await setupClientsForTesting();
     const topic = await testApproveSession(setup, clients);
@@ -176,7 +168,7 @@ describe("Session", function() {
     await expect(promise).to.eventually.be.rejectedWith(`Unauthorized session update request`);
   });
   it("B emits notification and A receives event", async () => {
-    const event = { type: "chainChanged", data: { chainId: "100" } };
+    const notification = { type: "chainChanged", data: { chainId: "100" } };
     const { setup, clients } = await setupClientsForTesting();
     const topic = await testApproveSession(setup, clients);
     await Promise.all([
@@ -185,29 +177,27 @@ describe("Session", function() {
           CLIENT_EVENTS.session.notification,
           (notificationEvent: SessionTypes.NotificationEvent) => {
             if (notificationEvent.topic !== topic) return;
-            expect(notificationEvent.type).to.eql(event.type);
-            expect(notificationEvent.data).to.eql(event.data);
+            expect(notificationEvent.notification.type).to.eql(notification.type);
+            expect(notificationEvent.notification.data).to.eql(notification.data);
             resolve();
           },
         );
       }),
       new Promise<void>(async (resolve, reject) => {
-        await clients.b.notify({ topic, type: event.type, data: event.data });
+        await clients.b.notify({ topic, notification });
         resolve();
       }),
     ]);
   });
   it("A emits notification and error is thrown", async () => {
-    const event = { type: "chainChanged", data: { chainId: "100" } };
+    const notification = { type: "chainChanged", data: { chainId: "100" } };
     const { setup, clients } = await setupClientsForTesting();
     const topic = await testApproveSession(setup, clients);
-    const promise = clients.a.notify({ topic, type: event.type, data: event.data });
+    const promise = clients.a.notify({ topic, notification });
     await expect(promise).to.eventually.be.rejectedWith(
-      `Unauthorized Notification Type Requested: ${event.type}`,
+      `Unauthorized Notification Type Requested: ${notification.type}`,
     );
   });
-  // FIXME: chainId is leaking to TEST_PERMISSIONS and breaking following tests
-  //
   it("B upgrades permissions and A receives event", async () => {
     const chainId = "eip155:300";
     const request = {
@@ -265,26 +255,6 @@ describe("Session", function() {
       `No matching session settled with topic: ${topic}`,
     );
   });
-  it("A fails to pings B after B deletes session", async () => {
-    const { setup, clients } = await setupClientsForTesting();
-    const topic = await testApproveSession(setup, clients);
-    const reason = ERROR.USER_DISCONNECTED.format();
-    await clients.b.disconnect({ topic, reason });
-    await expect(clients.b.session.get(topic)).to.eventually.be.rejectedWith(
-      `No matching session settled with topic: ${topic}`,
-    );
-    clients.a.session
-      .ping(topic, TEST_TIMEOUT_DURATION)
-      .then(() => {
-        throw new Error("Should not resolve");
-      })
-      .catch(e => {
-        expect(e.message).to.equal(
-          `JSON-RPC Request timeout after ${TEST_TIMEOUT_DURATION / 1000} seconds: wc_sessionPing`,
-        );
-      });
-    clock.tick(TEST_TIMEOUT_DURATION);
-  });
   it("clients ping each other after restart", async () => {
     const storage = new KeyValueStorage({ database: TEST_CLIENT_DATABASE });
     // setup
@@ -302,8 +272,30 @@ describe("Session", function() {
     await after.clients.a.session.ping(topic, TEST_TIMEOUT_DURATION);
     await after.clients.b.session.ping(topic, TEST_TIMEOUT_DURATION);
   });
+  it("can find compatible sessions from permission set", async () => {
+    const { setup, clients } = await setupClientsForTesting();
+    const topic = await testApproveSession(setup, clients);
+    const incompatible = await clients.a.session.find({ blockchain: { chains: ["eip155:123"] } });
+    expect(!!incompatible).to.be.true;
+    expect(incompatible.length).to.eql(0);
+    const compatible = await clients.a.session.find({ blockchain: { chains: ["eip155:1"] } });
+    expect(!!compatible).to.be.true;
+    expect(compatible.length).to.eql(1);
+    expect(compatible[0].topic).to.eql(topic);
+  });
+});
+
+describe("Session (with timeout)", function() {
+  this.timeout(TEST_TIMEOUT_DURATION);
+  let clock: sinon.SinonFakeTimers;
+  beforeEach(function() {
+    clock = sinon.useFakeTimers(Date.now());
+  });
+  afterEach(function() {
+    clock.restore();
+  });
   it("should expire after default period is elapsed", function() {
-    this.timeout(TEST_SESSION_TTL);
+    this.timeout(TEST_SESSION_TTL * 2);
     return new Promise<void>(async (resolve, reject) => {
       try {
         // setup
@@ -324,15 +316,26 @@ describe("Session", function() {
       }
     });
   });
-  it("can find compatible sessions from permission set", async () => {
+  it("A fails to pings B after B deletes session", async () => {
     const { setup, clients } = await setupClientsForTesting();
     const topic = await testApproveSession(setup, clients);
-    const incompatible = await clients.a.session.find({ blockchain: { chains: ["eip155:123"] } });
-    expect(!!incompatible).to.be.true;
-    expect(incompatible.length).to.eql(0);
-    const compatible = await clients.a.session.find({ blockchain: { chains: ["eip155:1"] } });
-    expect(!!compatible).to.be.true;
-    expect(compatible.length).to.eql(1);
-    expect(compatible[0].topic).to.eql(topic);
+    const reason = ERROR.USER_DISCONNECTED.format();
+    await clients.b.disconnect({ topic, reason });
+    await expect(clients.b.session.get(topic)).to.eventually.be.rejectedWith(
+      `No matching session settled with topic: ${topic}`,
+    );
+    clients.a.session
+      .ping(topic, TEST_TIMEOUT_DURATION)
+      .then(() => {
+        throw new Error("Should not resolve");
+      })
+      .catch(e => {
+        expect(e.message).to.equal(
+          `JSON-RPC Request timeout after ${fromMiliseconds(
+            TEST_TIMEOUT_DURATION,
+          )} seconds: wc_sessionPing`,
+        );
+      });
+    // clock.tick(TEST_TIMEOUT_DURATION);
   });
 });

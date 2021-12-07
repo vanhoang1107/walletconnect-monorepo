@@ -1,6 +1,6 @@
 import "mocha";
 import sinon from "sinon";
-import { generateRandomBytes32 } from "@walletconnect/utils";
+import { fromMiliseconds, generateRandomBytes32 } from "@walletconnect/utils";
 import { formatJsonRpcError, formatJsonRpcResult } from "@walletconnect/jsonrpc-utils";
 
 import {
@@ -15,14 +15,6 @@ import {
 } from "./shared";
 
 describe("Request", function() {
-  this.timeout(TEST_TIMEOUT_DURATION + 100);
-  let clock: sinon.SinonFakeTimers;
-  beforeEach(function() {
-    clock = sinon.useFakeTimers(Date.now());
-  });
-  afterEach(function() {
-    clock.restore();
-  });
   it("A requests method and B responds result", async () => {
     const { setup, clients } = await setupClientsForTesting();
     const topic = await testApproveSession(setup, clients);
@@ -57,6 +49,17 @@ describe("Request", function() {
       `Unauthorized JSON-RPC Method Requested: ${request.method}`,
     );
   });
+});
+
+describe("Request (with timeout)", function() {
+  this.timeout(TEST_TIMEOUT_DURATION);
+  let clock: sinon.SinonFakeTimers;
+  beforeEach(function() {
+    clock = sinon.useFakeTimers(Date.now());
+  });
+  afterEach(function() {
+    clock.restore();
+  });
   it("A requests method and B fails to return response in time", async () => {
     const { setup, clients } = await setupClientsForTesting();
     const topic = await testApproveSession(setup, clients);
@@ -69,7 +72,7 @@ describe("Request", function() {
       })
       .catch(e => {
         expect(e.message).to.equal(
-          `JSON-RPC Request timeout after ${TEST_TIMEOUT_DURATION / 1000} seconds: ${
+          `JSON-RPC Request timeout after ${fromMiliseconds(TEST_TIMEOUT_DURATION)} seconds: ${
             request.method
           }`,
         );

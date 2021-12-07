@@ -1,6 +1,6 @@
 import { ErrorResponse } from "@walletconnect/jsonrpc-utils";
 
-import { capitalize, enumify } from "./misc";
+import { capitalize, enumify, fromMiliseconds } from "./misc";
 
 export const ERROR_TYPE = enumify({
   // 0 (Generic)
@@ -11,6 +11,7 @@ export const ERROR_TYPE = enumify({
   MISSING_DECRYPT_PARAMS: "MISSING_DECRYPT_PARAMS",
   INVALID_UPDATE_REQUEST: "INVALID_UPDATE_REQUEST",
   INVALID_UPGRADE_REQUEST: "INVALID_UPGRADE_REQUEST",
+  INVALID_STORAGE_KEY_NAME: "INVALID_STORAGE_KEY_NAME",
   RECORD_ALREADY_EXISTS: "RECORD_ALREADY_EXISTS",
   RESTORE_WILL_OVERRIDE: "RESTORE_WILL_OVERRIDE",
   NO_MATCHING_ID: "NO_MATCHING_ID",
@@ -25,6 +26,8 @@ export const ERROR_TYPE = enumify({
   PROPOSAL_RESPONDED: "PROPOSAL_RESPONDED",
   RESPONSE_ACKNOWLEDGED: "RESPONSE_ACKNOWLEDGED",
   EXPIRED: "EXPIRED",
+  DELETED: "DELETED",
+  RESUBSCRIBED: "RESUBSCRIBED",
   // 2000 (Timeout)
   SETTLE_TIMEOUT: "SETTLE_TIMEOUT",
   JSONRPC_REQUEST_TIMEOUT: "JSONRPC_REQUEST_TIMEOUT",
@@ -68,6 +71,7 @@ export type Error = {
 };
 
 const defaultParams = {
+  topic: "undefined",
   message: "Something went wrong",
   name: "parameter",
   context: "session",
@@ -133,6 +137,15 @@ export const ERROR: Record<ErrorType, Error> = {
     format: (params?: any) => ({
       code: ERROR[ERROR_TYPE.INVALID_UPGRADE_REQUEST].code,
       message: ERROR[ERROR_TYPE.INVALID_UPGRADE_REQUEST].stringify(params),
+    }),
+  },
+  [ERROR_TYPE.INVALID_STORAGE_KEY_NAME]: {
+    type: ERROR_TYPE.INVALID_STORAGE_KEY_NAME,
+    code: 1005,
+    stringify: (params?: any) => `Invalid storage key name: ${params?.name || defaultParams.name}`,
+    format: (params?: any) => ({
+      code: ERROR[ERROR_TYPE.INVALID_STORAGE_KEY_NAME].code,
+      message: ERROR[ERROR_TYPE.INVALID_STORAGE_KEY_NAME].stringify(params),
     }),
   },
   [ERROR_TYPE.RECORD_ALREADY_EXISTS]: {
@@ -266,11 +279,30 @@ export const ERROR: Record<ErrorType, Error> = {
   },
   [ERROR_TYPE.EXPIRED]: {
     type: ERROR_TYPE.EXPIRED,
-    code: 1603,
+    code: 1604,
     stringify: (params?: any) => `${capitalize(params?.context || defaultParams.context)} expired`,
     format: (params?: any) => ({
       code: ERROR[ERROR_TYPE.EXPIRED].code,
       message: ERROR[ERROR_TYPE.EXPIRED].stringify(params),
+    }),
+  },
+  [ERROR_TYPE.DELETED]: {
+    type: ERROR_TYPE.DELETED,
+    code: 1605,
+    stringify: (params?: any) => `${capitalize(params?.context || defaultParams.context)} deleted`,
+    format: (params?: any) => ({
+      code: ERROR[ERROR_TYPE.DELETED].code,
+      message: ERROR[ERROR_TYPE.DELETED].stringify(params),
+    }),
+  },
+  [ERROR_TYPE.RESUBSCRIBED]: {
+    type: ERROR_TYPE.RESUBSCRIBED,
+    code: 1606,
+    stringify: (params?: any) =>
+      `Subscription resubscribed with topic: ${params.topic || defaultParams.topic}`,
+    format: (params?: any) => ({
+      code: ERROR[ERROR_TYPE.RESUBSCRIBED].code,
+      message: ERROR[ERROR_TYPE.RESUBSCRIBED].stringify(params),
     }),
   },
   // 2000 (Timeout)
@@ -280,7 +312,7 @@ export const ERROR: Record<ErrorType, Error> = {
     stringify: (params?: any) =>
       `${capitalize(
         params?.context || defaultParams.context,
-      )} failed to settle after ${params?.timeout / 1000} seconds`,
+      )} failed to settle after ${fromMiliseconds(params?.timeout)} seconds`,
     format: (params?: any) => ({
       code: ERROR[ERROR_TYPE.SETTLE_TIMEOUT].code,
       message: ERROR[ERROR_TYPE.SETTLE_TIMEOUT].stringify(params),
@@ -290,7 +322,9 @@ export const ERROR: Record<ErrorType, Error> = {
     type: ERROR_TYPE.JSONRPC_REQUEST_TIMEOUT,
     code: 2001,
     stringify: (params?: any) =>
-      `JSON-RPC Request timeout after ${params?.timeout / 1000} seconds: ${params?.method}`,
+      `JSON-RPC Request timeout after ${fromMiliseconds(params?.timeout)} seconds: ${
+        params?.method
+      }`,
     format: (params?: any) => ({
       code: ERROR[ERROR_TYPE.JSONRPC_REQUEST_TIMEOUT].code,
       message: ERROR[ERROR_TYPE.JSONRPC_REQUEST_TIMEOUT].stringify(params),

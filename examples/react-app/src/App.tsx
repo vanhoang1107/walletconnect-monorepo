@@ -36,11 +36,14 @@ import {
   AccountBalances,
   formatTestTransaction,
   ChainNamespaces,
+  setInitialStateTestnet,
+  getInitialStateTestnet,
 } from "./helpers";
 import { fonts } from "./styles";
 import Toggle from "./components/Toggle";
 import RequestModal from "./modals/RequestModal";
 import PairingModal from "./modals/PairingModal";
+import PingModal from "./modals/PingModal";
 
 const SLayout = styled.div`
   position: relative;
@@ -147,6 +150,7 @@ const INITIAL_STATE: AppState = {
 class App extends React.Component<any, any> {
   public state: AppState = {
     ...INITIAL_STATE,
+    testnet: getInitialStateTestnet(),
   };
   public componentDidMount() {
     this.init();
@@ -319,7 +323,11 @@ class App extends React.Component<any, any> {
     this.setState({ ...INITIAL_STATE, client, chainData });
   };
 
-  public toggleTestnets = () => this.setState({ testnet: !this.state.testnet });
+  public toggleTestnets = () => {
+    const testnet = !this.state.testnet;
+    this.setState({ testnet });
+    setInitialStateTestnet(testnet);
+  };
 
   public onSessionConnected = async (session: SessionTypes.Settled) => {
     this.setState({ session });
@@ -348,8 +356,8 @@ class App extends React.Component<any, any> {
         balances[account] = assets;
       });
       this.setState({ fetching: false, balances });
-    } catch (error) {
-      console.error(error);
+    } catch (e) {
+      console.error(e);
       this.setState({ fetching: false });
     }
   };
@@ -357,6 +365,8 @@ class App extends React.Component<any, any> {
   public openPairingModal = () => this.setState({ modal: "pairing" });
 
   public openRequestModal = () => this.setState({ pending: true, modal: "request" });
+
+  public openPingModal = () => this.setState({ pending: true, modal: "ping" });
 
   public openModal = (modal: string) => this.setState({ modal });
 
@@ -423,8 +433,8 @@ class App extends React.Component<any, any> {
 
       // display result
       this.setState({ pending: false, result: formattedResult || null });
-    } catch (error) {
-      console.error(error);
+    } catch (e) {
+      console.error(e);
       this.setState({ pending: false, result: null });
     }
   };
@@ -491,8 +501,8 @@ class App extends React.Component<any, any> {
 
       // display result
       this.setState({ pending: false, result: formattedResult || null });
-    } catch (error) {
-      console.error(error);
+    } catch (e) {
+      console.error(e);
       this.setState({ pending: false, result: null });
     }
   };
@@ -555,8 +565,8 @@ class App extends React.Component<any, any> {
 
       // display result
       this.setState({ pending: false, result: formattedResult || null });
-    } catch (error) {
-      console.error(error);
+    } catch (e) {
+      console.error(e);
       this.setState({ pending: false, result: null });
     }
   };
@@ -641,8 +651,8 @@ class App extends React.Component<any, any> {
 
       // display result
       this.setState({ pending: false, result: formattedResult || null });
-    } catch (error) {
-      console.error(error);
+    } catch (e) {
+      console.error(e);
       this.setState({ pending: false, result: null });
     }
   };
@@ -710,8 +720,43 @@ class App extends React.Component<any, any> {
 
       // display result
       this.setState({ pending: false, result: formattedResult || null });
-    } catch (error) {
-      console.error(error);
+    } catch (e) {
+      console.error(e);
+      this.setState({ pending: false, result: null });
+    }
+  };
+
+  public ping = async () => {
+    if (typeof this.state.client === "undefined") {
+      throw new Error("WalletConnect is not initialized");
+    }
+    if (typeof this.state.session === "undefined") {
+      throw new Error("Session is not connected");
+    }
+
+    try {
+      // open modal
+      this.openPingModal();
+
+      let valid = false;
+
+      try {
+        await this.state.client.session.ping(this.state.session.topic);
+        valid = true;
+      } catch (e) {
+        valid = false;
+      }
+
+      // format displayed result
+      const formattedResult = {
+        method: "ping",
+        valid,
+      };
+
+      // display result
+      this.setState({ pending: false, result: formattedResult || null });
+    } catch (e) {
+      console.error(e);
       this.setState({ pending: false, result: null });
     }
   };
@@ -761,6 +806,8 @@ class App extends React.Component<any, any> {
         return <PairingModal pairings={this.state.client.pairing.values} connect={this.connect} />;
       case "request":
         return <RequestModal pending={this.state.pending} result={this.state.result} />;
+      case "ping":
+        return <PingModal pending={this.state.pending} result={this.state.result} />;
       default:
         return null;
     }
@@ -830,7 +877,7 @@ class App extends React.Component<any, any> {
     return (
       <SLayout>
         <Column maxWidth={1000} spanHeight>
-          <Header disconnect={this.disconnect} session={session} />
+          <Header ping={this.ping} disconnect={this.disconnect} session={session} />
           <SContent>{loading ? "Loading..." : this.renderContent()}</SContent>
         </Column>
         <Modal show={!!modal} closeModal={this.closeModal}>
